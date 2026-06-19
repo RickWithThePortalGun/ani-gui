@@ -66,6 +66,15 @@ HISTFILE = os.path.join(
                     or os.path.expanduser("~/.local/state"), "ani-cli"),
     "ani-hsts")
 
+# Downloads log — records what the user asked to download.
+DLFILE = os.path.join(
+    os.environ.get("ANI_CLI_DOWNLOAD_DIR")
+    or os.path.join(os.environ.get("XDG_STATE_HOME")
+                    or os.path.expanduser("~/.local/state"), "ani-cli"),
+    "ani-downloads.json")
+
+_downloads_lock = threading.Lock()
+
 
 def _api_post(payload):
     data = json.dumps(payload).encode()
@@ -206,6 +215,40 @@ def read_history():
     except FileNotFoundError:
         pass
     return entries
+
+
+def _read_downloads():
+    """Return the current download log (newest first)."""
+    try:
+        with open(DLFILE) as f:
+            return json.loads(f.read() or "[]")
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
+
+
+def _write_downloads(items):
+    with _downloads_lock:
+        with open(DLFILE, "w") as f:
+            json.dump(items, f, indent=2)
+
+
+def _record_download(title, ep, quality, mode):
+    """Add a download entry and persist immediately."""
+    items = _read_downloads()
+    # Remove any older entry for the same title+ep (duplicate).
+    items = [d for d in items
+             if not (d.get("title") == title and d.get("ep") == ep)]
+    items.insert(0, {
+        "title": title,
+        "ep": ep,
+        "quality": quality,
+        "mode": mode,
+        "time": time.strftime("%Y-%m-%d %H:%M"),
+        "dir": os.environ.get("ANI_CLI_DOWNLOAD_DIR")
+               or os.getcwd(),
+    })
+    # Keep at most 50 entries.
+    _write_downloads(items[:50])
 
 
 def _anilist_post(query, variables):
@@ -416,6 +459,7 @@ def play(query, nth, ep, quality, mode, download=False, player="default"):
         subprocess.Popen(cmd, stdin=subprocess.DEVNULL,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                          env=env, start_new_session=True)
+        _record_download(query, ep, quality, mode)
         return {"ok": True, "stage": "download",
                 "message": f"Downloading episode {ep} in the background "
                            "(saved to ani-cli's download dir)."}
@@ -590,6 +634,8 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/api/recommendations":
                 mode = q.get("mode", ["sub"])[0]
                 return self._send(200, {"items": recommendations(mode)})
+            if u.path == "/api/downloads":
+                return self._send(200, {"items": _read_downloads()})
             if u.path == "/api/version":
                 return self._send(200, version_info())
             if u.path == "/api/cover":

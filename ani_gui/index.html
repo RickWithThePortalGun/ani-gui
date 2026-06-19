@@ -189,6 +189,7 @@
     <button class="tab active" data-tab="search">Search</button>
     <button class="tab" data-tab="continue">Continue Watching</button>
     <button class="tab" data-tab="for-you">For You</button>
+    <button class="tab" data-tab="downloads">Downloads</button>
   </div>
 
   <div id="searchView">
@@ -220,6 +221,11 @@
     <div id="forYouList"></div>
   </div>
 
+  <div id="downloadsView" style="display:none">
+    <div class="hint">Episodes you've asked ani-gui to download via ani-cli.</div>
+    <div id="downloadsList"></div>
+  </div>
+
   <footer id="footer">
     <span id="verInfo">ani-gui</span>
     <span id="health"></span>
@@ -244,8 +250,10 @@ document.querySelectorAll(".tab").forEach(t => t.addEventListener("click", () =>
   $("#searchView").style.display = tab === "search" ? "" : "none";
   $("#continueView").style.display = tab === "continue" ? "" : "none";
   $("#forYouView").style.display = tab === "for-you" ? "" : "none";
+  $("#downloadsView").style.display = tab === "downloads" ? "" : "none";
   if (tab === "continue") loadContinue();
   if (tab === "for-you") loadForYou();
+  if (tab === "downloads") loadDownloads();
 }));
 
 $("#mode").addEventListener("change", e => {
@@ -558,6 +566,41 @@ function escHtml(s) {
   const d = document.createElement("div");
   d.textContent = s;
   return d.innerHTML;
+}
+
+async function loadDownloads() {
+  const box = $("#downloadsList");
+  box.innerHTML = `<div class="spin">Loading…</div>`;
+  try {
+    const r = await fetch("/api/downloads");
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+    renderDownloads(d.items);
+  } catch (err) {
+    box.innerHTML = `<div class="empty">Couldn't load download history.</div>`;
+  }
+}
+
+function renderDownloads(items) {
+  const box = $("#downloadsList");
+  if (!items.length) {
+    box.innerHTML = `<div class="empty">Nothing downloaded yet. Search for an anime, pick an episode, and click Download.</div>`;
+    return;
+  }
+  box.innerHTML = `<div class="list"></div>`;
+  const list = box.querySelector(".list");
+  for (const d of items) {
+    const el = document.createElement("div");
+    el.className = "item";
+    el.innerHTML = `
+      <span class="cover"></span>
+      <span class="name">${escHtml(d.title)} — ep ${escHtml(String(d.ep))}</span>
+      <span class="meta">${escHtml(d.mode)} · ${escHtml(d.quality)} · ${escHtml(d.time)}</span>`;
+    el.title = `Saved to: ${d.dir}`;
+    list.appendChild(el);
+  }
+  box.insertAdjacentHTML("beforeend",
+    `<div class="hint" style="margin-top:12px">Files saved to <code>${escHtml(items[0].dir)}</code> (or <code>$ANI_CLI_DOWNLOAD_DIR</code> if set).</div>`);
 }
 </script>
 </body>
