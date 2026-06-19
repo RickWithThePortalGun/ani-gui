@@ -83,12 +83,18 @@
   <section id="install">
     <h2>Install &amp; run</h2>
 
-    <p class="muted">With pipx (recommended — isolated, on your PATH):</p>
-    <pre><code>pipx install ani-gui
+    <p class="muted">With pipx — recommended. Isolated, handles PATH automatically:</p>
+    <pre><code>brew install pipx &amp;&amp; pipx ensurepath     # first time only
+pipx install ani-gui
 ani-gui</code></pre>
 
     <p class="muted">With Homebrew (macOS / Linux):</p>
     <pre><code>brew install rickwiththeportalgun/tap/ani-gui
+ani-gui</code></pre>
+
+    <p class="muted">With pip — on macOS you may need to add the scripts directory to PATH:</p>
+    <pre><code>pip3 install ani-gui
+export PATH="$HOME/Library/Python/$(python3 -c 'import sys;print(sys.version_info.minor)')/bin:$PATH"
 ani-gui</code></pre>
 
     <p class="muted">From source:</p>

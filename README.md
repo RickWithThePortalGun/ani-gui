@@ -34,9 +34,10 @@ place and keeps working as ani-cli updates.
 
 ## Install & run
 
-**pipx** (recommended — isolated, on your PATH):
+**pipx** — recommended. Isolated environment, handles PATH automatically:
 
 ```sh
+brew install pipx && pipx ensurepath     # first time only
 pipx install ani-gui
 ani-gui
 ```
@@ -45,6 +46,18 @@ ani-gui
 
 ```sh
 brew install rickwiththeportalgun/tap/ani-gui
+ani-gui
+```
+
+**pip** — works but may need a PATH tweak. On macOS, `pip3` installs scripts to
+`~/Library/Python/3.x/bin`, which isn't on `PATH` by default. Add it to your
+shell config if you go this route:
+
+```sh
+pip3 install ani-gui
+# If "command not found", add the scripts dir to PATH:
+export PATH="$HOME/Library/Python/$(python3 -c 'import sys;print(sys.version_info.minor)')/bin:$PATH"
+echo 'export PATH="$HOME/Library/Python/$(python3 -c "import sys;print(sys.version_info.minor)")/bin:$PATH"' >> ~/.zshrc
 ani-gui
 ```
 
