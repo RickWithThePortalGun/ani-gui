@@ -637,10 +637,28 @@ def _anigui_latest_version():
     return latest
 
 
+def _install_method():
+    """Figure out how ani-gui was installed so we can give the right
+    upgrade command.  Checks the package's location on disk."""
+    import ani_gui as _pkg
+    loc = getattr(_pkg, "__file__", "") or ""
+
+    if "/pipx/venvs/" in loc:
+        return "pipx"
+    if "/Cellar/ani-gui/" in loc or "/homebrew/" in loc:
+        return "brew"
+    if "site-packages" in loc:
+        return "pip"
+    if "/ani-gui/ani_gui/" in loc:
+        return "source"
+    return "unknown"
+
+
 def version_info():
     acli_installed = anicli_installed_version()
     acli_latest = anicli_latest_version()
     agui_latest = _anigui_latest_version()
+    method = _install_method()
     deps = {name: bool(shutil.which(name))
             for name in ("ani-cli", "mpv", "iina", "vlc", "curl",
                          "yt-dlp", "ffmpeg")}
@@ -649,6 +667,7 @@ def version_info():
         "ani_gui": VERSION,
         "ani_gui_update": bool(agui_latest and agui_latest != VERSION),
         "ani_gui_latest": agui_latest or None,
+        "install_method": method,
         "ani_cli": {
             "installed": acli_installed,
             "latest": acli_latest,

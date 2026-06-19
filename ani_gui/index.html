@@ -345,9 +345,20 @@ async function loadVersion() {
     } else if (!v.has_player) {
       showBanner("<b>No video player found.</b> Install <code>mpv</code> or <code>iina</code> to watch.", true);
     } else if (v.ani_gui_update) {
+      const method = v.install_method || "";
+      const cmd = method === "brew" ? "brew upgrade rickwiththeportalgun/tap/ani-gui"
+                : method === "pip"  ? "pip3 install --upgrade ani-gui"
+                : method === "pipx" ? "pipx upgrade ani-gui"
+                : method === "source" ? "git -C $(dirname $(python3 -c 'import ani_gui;print(ani_gui.__file__)')/../..) pull"
+                : "pipx upgrade ani-gui";
       showBanner(`<b>ani-gui ${v.ani_gui} → ${v.ani_gui_latest} available.</b> ` +
-        `Update with <code>pipx upgrade ani-gui</code>`, false);
+        `Update with <code>${cmd}</code>`, false);
     } else if (c.update_available) {
+      const acliMethod = v.install_method === "brew"
+        ? "brew upgrade ani-cli" : "ani-cli -U";
+      showBanner(`<b>ani-cli ${c.installed} → ${c.latest} available.</b> ` +
+        `Update with <code>${acliMethod}</code>`, false);
+    }
       showBanner(`<b>ani-cli ${c.installed} → ${c.latest} available.</b> ` +
         `Update with <code>ani-cli -U</code>` +
         ` (or <code>brew upgrade ani-cli</code> if installed via Homebrew).`, false);
