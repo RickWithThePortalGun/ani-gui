@@ -211,6 +211,7 @@ document.querySelectorAll(".tab").forEach(t => t.addEventListener("click", () =>
 
 $("#mode").addEventListener("change", e => {
   state.mode = e.target.value;
+  _forYouCache = null;  // bust cache — mode affects available titles
   if ($("#q").value.trim()) runSearch();
 });
 
@@ -449,15 +450,28 @@ function renderContinue(items) {
   }
 }
 
+let _forYouCache = null;
+let _forYouMode = null;
+
 async function loadForYou() {
   const box = $("#forYouList");
+
+  // Serve from cache if mode hasn't changed.
+  if (_forYouCache && _forYouMode === state.mode) {
+    renderForYou(_forYouCache);
+    return;
+  }
+
   box.innerHTML = `<div class="spin">Finding recommendations…</div>`;
   try {
     const r = await fetch(`/api/recommendations?mode=${state.mode}`);
     const d = await r.json();
     if (d.error) throw new Error(d.error);
+    _forYouCache = d.items;
+    _forYouMode = state.mode;
     renderForYou(d.items);
   } catch (err) {
+    _forYouCache = null;
     box.innerHTML = `<div class="empty">Nothing to recommend yet — watch a few episodes first.</div>`;
   }
 }
