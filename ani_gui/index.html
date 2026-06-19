@@ -141,11 +141,16 @@
 
     .bar {
       flex-wrap: wrap;
+      gap: 6px;
     }
-    .bar input[type=text] { flex: 1 1 100%; min-width: 0; }
-    .bar select, .bar button { flex: 0 0 auto; }
+    .bar input[type=text] {
+      flex: 1 1 100%; width: 100%; min-width: 0;
+    }
+    .bar select, .bar button {
+      flex: 1 1 auto; min-width: 0; font-size: 12px; padding: 8px 10px;
+    }
 
-    .tabs { gap: 12px; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    .tabs { gap: 10px; overflow-x: auto; -webkit-overflow-scrolling: touch; }
     .tab { font-size: 12px; white-space: nowrap; padding: 8px 1px; }
 
     .cards { grid-template-columns: 1fr; }
@@ -158,8 +163,8 @@
 
     .panel { padding: 12px; }
     .panel h2 { font-size: 13px; }
-    .panel .actions { flex-wrap: wrap; gap: 8px; }
-    .panel .actions select, .panel .actions button { flex: 1 1 auto; }
+    .panel .actions { flex-wrap: wrap; gap: 6px; }
+    .panel .actions select, .panel .actions button { flex: 1 1 auto; min-width: 0; font-size: 12px; padding: 8px 10px; }
 
     .eps { gap: 4px; }
     .ep { min-width: 34px; padding: 6px 7px; font-size: 12px; }
