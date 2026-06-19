@@ -458,8 +458,32 @@ async function doPlay(els, download) {
         download,
       })});
     const d = await r.json();
-    if (d.ok) setStatus(status, d.stage === "slow" ? "work" : "ok", d.message);
-    else setStatus(status, "err", d.error || "Playback failed.");
+    if (d.ok) {
+      setStatus(status, d.stage === "slow" ? "work" : "ok", d.message);
+      // If this was a download, bust the downloads cache so the tab
+      // picks up the new entry on next visit, and prepend it live if
+      // the tab is already open.
+      if (download) {
+        _downloadsDirty = true;
+        // If the Downloads tab is already open, prepend the entry live.
+        const dv = document.querySelector("#downloadsView");
+        if (dv && dv.style.display !== "none") {
+          const listBox = document.querySelector("#downloadsList .list");
+          if (listBox) {
+            const ep = state.ep;
+            const title = $("#q").value.trim();
+            const qual = els.panel.querySelector(".quality-select").value;
+            const now = new Date().toISOString().replace("T"," ").slice(0,16);
+            const el = document.createElement("div");
+            el.className = "item";
+            el.innerHTML = `<span class="cover"></span><span class="name">${escHtml(title)} — ep ${escHtml(String(ep))}</span><span class="meta">${escHtml(state.mode)} · ${escHtml(qual)} · ${escHtml(now)}</span>`;
+            listBox.insertBefore(el, listBox.firstChild);
+          }
+        }
+      }
+    } else {
+      setStatus(status, "err", d.error || "Playback failed.");
+    }
   } catch (err) {
     setStatus(status, "err", "Couldn't reach the server: " + err.message);
   } finally {
@@ -604,14 +628,19 @@ function escHtml(s) {
   return d.innerHTML;
 }
 
+let _downloadsDirty = false;
+
 async function loadDownloads() {
   const box = $("#downloadsList");
+  // Re-fetch if dirty or first load.
+  if (!_downloadsDirty && box.querySelector(".list")) return;
   box.innerHTML = `<div class="spin">Loading…</div>`;
   try {
     const r = await fetch("/api/downloads");
     const d = await r.json();
     if (d.error) throw new Error(d.error);
     renderDownloads(d.items);
+    _downloadsDirty = false;
   } catch (err) {
     box.innerHTML = `<div class="empty">Couldn't load download history.</div>`;
   }
