@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ani-gui"
-version = "0.2.0"
+version = "0.2.1"
 description = "A small local web UI for ani-cli."
 readme = "README.md"
 requires-python = ">=3.6"
@@ -29,7 +29,7 @@ ani-gui = "ani_gui.server:main"
 packages = ["ani_gui"]
 
 [tool.setuptools.package-data]
-ani_gui = ["index.html"]
+ani_gui = ["index.html", "docs.html"]
 
 [tool.ruff]
 line-length = 100

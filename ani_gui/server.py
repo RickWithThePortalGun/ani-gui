@@ -29,7 +29,7 @@ from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-VERSION = "0.2.0"
+VERSION = "0.2.1"
 ANI_CLI_RAW = "https://raw.githubusercontent.com/pystardust/ani-cli/master/ani-cli"
 
 # --- AllAnime API (mirrors the constants inside the ani-cli script) ----------
@@ -562,10 +562,18 @@ class Handler(BaseHTTPRequestHandler):
                 with open(os.path.join(HERE, "index.html"), "rb") as f:
                     return self._send(200, f.read(), "text/html; charset=utf-8")
             if u.path == "/docs":
-                docs = os.path.join(os.path.dirname(HERE), "docs", "index.html")
-                if os.path.isfile(docs):
-                    with open(docs, "rb") as f:
-                        return self._send(200, f.read(), "text/html; charset=utf-8")
+                # Try the in-package copy first (works for pip installs),
+                # then fall back to the source-layout location.
+                candidates = [
+                    os.path.join(HERE, "docs.html"),
+                    os.path.join(os.path.dirname(HERE), "docs", "index.html"),
+                ]
+                for path in candidates:
+                    if os.path.isfile(path):
+                        with open(path, "rb") as f:
+                            return self._send(200, f.read(),
+                                              "text/html; charset=utf-8")
+                return self._send(404, {"error": "docs not found"})
             if u.path == "/api/search":
                 query = (q.get("q", [""])[0]).strip()
                 mode = q.get("mode", ["sub"])[0]
