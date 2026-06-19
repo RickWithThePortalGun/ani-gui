@@ -359,10 +359,6 @@ async function loadVersion() {
       showBanner(`<b>ani-cli ${c.installed} → ${c.latest} available.</b> ` +
         `Update with <code>${acliMethod}</code>`, false);
     }
-      showBanner(`<b>ani-cli ${c.installed} → ${c.latest} available.</b> ` +
-        `Update with <code>ani-cli -U</code>` +
-        ` (or <code>brew upgrade ani-cli</code> if installed via Homebrew).`, false);
-    }
   } catch (_) { /* footer just stays minimal */ }
 }
 loadVersion();
