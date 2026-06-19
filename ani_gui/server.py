@@ -29,7 +29,7 @@ from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-VERSION = "0.3.2"
+VERSION = "0.3.3"
 ANI_CLI_RAW = "https://raw.githubusercontent.com/pystardust/ani-cli/master/ani-cli"
 
 # --- AllAnime API (mirrors the constants inside the ani-cli script) ----------
@@ -705,6 +705,21 @@ def _install_method():
     return "unknown"
 
 
+def _version_newer(a, b):
+    """True if version string *b* is strictly newer than *a*."""
+    try:
+        aa = [int(x) for x in a.split(".")]
+        bb = [int(x) for x in b.split(".")]
+        # Pad to same length.
+        while len(aa) < len(bb):
+            aa.append(0)
+        while len(bb) < len(aa):
+            bb.append(0)
+        return bb > aa
+    except (ValueError, AttributeError):
+        return a != b  # fall back to string compare
+
+
 def version_info():
     acli_installed = anicli_installed_version()
     acli_latest = anicli_latest_version()
@@ -716,7 +731,7 @@ def version_info():
     has_player = deps["mpv"] or deps["iina"] or deps["vlc"]
     return {
         "ani_gui": VERSION,
-        "ani_gui_update": bool(agui_latest and agui_latest != VERSION),
+        "ani_gui_update": bool(agui_latest and _version_newer(VERSION, agui_latest)),
         "ani_gui_latest": agui_latest or None,
         "install_method": method,
         "ani_cli": {
@@ -724,7 +739,7 @@ def version_info():
             "latest": acli_latest,
             "path": ani_cli_path(),
             "update_available": bool(acli_installed and acli_latest
-                                     and acli_installed != acli_latest),
+                                     and _version_newer(acli_installed, acli_latest)),
         },
         "deps": deps,
         "has_player": has_player,
