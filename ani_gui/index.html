@@ -355,6 +355,12 @@ async function selectShow(a, el) {
 function renderDetail(a, episodes) {
   const panel = document.createElement("div");
   panel.className = "panel";
+
+  let epOpts = "";
+  for (const ep of episodes) {
+    epOpts += `<option value="${ep}">Episode ${ep}</option>`;
+  }
+
   panel.innerHTML = `
     <div style="display:flex; gap:14px; margin-bottom:14px;">
       ${coverImg(a.thumbnail, "cover lg")}
@@ -363,8 +369,11 @@ function renderDetail(a, episodes) {
         <div class="sub" style="margin:4px 0 0;">${episodes.length} episode${episodes.length===1?"":"s"} · ${state.mode}</div>
       </div>
     </div>
-    <div class="eps"></div>
     <div class="actions">
+      <select id="epSelect" title="Episode" style="min-width:120px">
+        <option value="">— pick episode —</option>
+        ${epOpts}
+      </select>
       <select id="quality" title="Quality">
         <option value="best">Best</option>
         <option value="1080">1080p</option>
@@ -377,23 +386,19 @@ function renderDetail(a, episodes) {
     </div>
     <div class="status" id="status"></div>`;
   panel.querySelector("h2").textContent = a.name;
-  const epsBox = panel.querySelector(".eps");
-  if (!episodes.length) {
-    epsBox.innerHTML = `<span class="empty">No episodes available.</span>`;
+
+  const epSel = panel.querySelector("#epSelect");
+  epSel.addEventListener("change", () => {
+    state.ep = epSel.value || null;
+    panel.querySelector("#playBtn").disabled = !state.ep;
+    panel.querySelector("#dlBtn").disabled = !state.ep;
+  });
+
+  if (episodes.length === 0) {
+    epSel.disabled = true;
+    epSel.innerHTML = `<option value="">No episodes available</option>`;
   }
-  for (const ep of episodes) {
-    const b = document.createElement("div");
-    b.className = "ep";
-    b.textContent = ep;
-    b.addEventListener("click", () => {
-      epsBox.querySelectorAll(".ep").forEach(x => x.classList.remove("sel"));
-      b.classList.add("sel");
-      state.ep = ep;
-      panel.querySelector("#playBtn").disabled = false;
-      panel.querySelector("#dlBtn").disabled = false;
-    });
-    epsBox.appendChild(b);
-  }
+
   panel.querySelector("#playBtn").addEventListener("click", () => doPlay(panel, false));
   panel.querySelector("#dlBtn").addEventListener("click", () => doPlay(panel, true));
   $("#detail").innerHTML = "";
