@@ -149,6 +149,7 @@
   <div class="tabs">
     <button class="tab active" data-tab="search">Search</button>
     <button class="tab" data-tab="continue">Continue Watching</button>
+    <button class="tab" data-tab="for-you">For You</button>
   </div>
 
   <div id="searchView">
@@ -175,6 +176,11 @@
     <div id="continueList"></div>
   </div>
 
+  <div id="forYouView" style="display:none">
+    <div class="hint">Anime you might like, based on what you've watched.</div>
+    <div id="forYouList"></div>
+  </div>
+
   <footer id="footer">
     <span id="verInfo">ani-gui</span>
     <span id="health"></span>
@@ -198,7 +204,9 @@ document.querySelectorAll(".tab").forEach(t => t.addEventListener("click", () =>
   const tab = t.dataset.tab;
   $("#searchView").style.display = tab === "search" ? "" : "none";
   $("#continueView").style.display = tab === "continue" ? "" : "none";
+  $("#forYouView").style.display = tab === "for-you" ? "" : "none";
   if (tab === "continue") loadContinue();
+  if (tab === "for-you") loadForYou();
 }));
 
 $("#mode").addEventListener("change", e => {
@@ -439,6 +447,64 @@ function renderContinue(items) {
     });
     grid.appendChild(card);
   }
+}
+
+async function loadForYou() {
+  const box = $("#forYouList");
+  box.innerHTML = `<div class="spin">Finding recommendations…</div>`;
+  try {
+    const r = await fetch(`/api/recommendations?mode=${state.mode}`);
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+    renderForYou(d.items);
+  } catch (err) {
+    box.innerHTML = `<div class="empty">Nothing to recommend yet — watch a few episodes first.</div>`;
+  }
+}
+
+function renderForYou(items) {
+  const box = $("#forYouList");
+  if (!items.length) {
+    box.innerHTML = `<div class="empty">Nothing to recommend yet — watch a few episodes first.</div>`;
+    return;
+  }
+  box.innerHTML = `<div class="cards"></div>`;
+  const grid = box.querySelector(".cards");
+  for (const it of items) {
+    const card = document.createElement("div");
+    card.className = "card";
+    card.innerHTML = `
+      ${coverImg(it.thumbnail, "cover lg")}
+      <div class="body">
+        <div class="title"></div>
+        <div class="prog">Because you watched ${escHtml(it.because)}</div>
+        <button class="primary">Open in Search</button>
+      </div>`;
+    card.querySelector(".title").textContent = it.name;
+    card.querySelector("button").addEventListener("click", () => {
+      // Switch to Search tab with this anime pre-loaded
+      document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
+      document.querySelector('[data-tab="search"]').classList.add("active");
+      $("#searchView").style.display = "";
+      $("#continueView").style.display = "none";
+      $("#forYouView").style.display = "none";
+      $("#q").value = it.name;
+      runSearch().then(() => {
+        // Pre-select the first result after search loads
+        setTimeout(() => {
+          const first = document.querySelector("#results .item");
+          if (first) first.click();
+        }, 300);
+      });
+    });
+    grid.appendChild(card);
+  }
+}
+
+function escHtml(s) {
+  const d = document.createElement("div");
+  d.textContent = s;
+  return d.innerHTML;
 }
 </script>
 </body>

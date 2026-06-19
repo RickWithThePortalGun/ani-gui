@@ -38,10 +38,15 @@ AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:150.0) "
 REFERER = "https://youtu-chan.com"
 API = "https://api.allanime.day/api"
 COVER_CDN = "https://wp.youtube-anime.com/aln.youtube-anime.com"
+ANILIST_API = "https://graphql.anilist.co"
 
 # Wikipedia cover cache (title -> image URL or "")
 _wiki_cover_cache = {}
 _wiki_cover_lock = threading.Lock()
+
+# AniList recommendation cache (show title -> [(title, cover_url), …])
+_anilist_recs_cache = {}
+_anilist_recs_lock = threading.Lock()
 
 SEARCH_GQL = ("query( $search: SearchInput $limit: Int $page: Int "
               "$translationType: VaildTranslationTypeEnumType "
@@ -201,6 +206,130 @@ def read_history():
     except FileNotFoundError:
         pass
     return entries
+
+
+def _anilist_post(query, variables):
+    """Tiny GraphQL helper for the AniList API (public, no auth)."""
+    payload = {"query": query, "variables": variables}
+    data = json.dumps(payload).encode()
+    req = urllib.request.Request(
+        ANILIST_API, data=data, method="POST",
+        headers={"Content-Type": "application/json",
+                 "User-Agent": AGENT})
+    with urllib.request.urlopen(req, timeout=15) as r:
+        return json.loads(r.read().decode())
+
+
+def _anilist_recommendations(title):
+    """Query AniList for user-submitted recommendations for *title*.
+
+    Returns a list of ``{name, thumbnail}`` dicts (english/romaji title and
+    AniList cover URL).  Cached per *title* so repeated calls are cheap."""
+    with _anilist_recs_lock:
+        if title in _anilist_recs_cache:
+            return _anilist_recs_cache[title]
+
+    recs = []
+    try:
+        # 1) Find the AniList media ID for this title.
+        search = _anilist_post(
+            "query ($s: String) { Media(search: $s, type: ANIME) { id } }",
+            {"s": title})
+        media = (search.get("data", {}).get("Media") or {})
+        ani_id = media.get("id")
+        if not ani_id:
+            raise ValueError("not found on AniList")
+
+        # 2) Fetch recommendations (highest-rated first).
+        result = _anilist_post(
+            """query ($id: Int) { Media(id: $id, type: ANIME) {
+              recommendations(sort: RATING_DESC) {
+                nodes {
+                  mediaRecommendation {
+                    title { romaji english }
+                    coverImage { medium }
+                    format
+                  }
+                }
+              }
+            }}""",
+            {"id": ani_id})
+
+        nodes = (result.get("data", {})
+                 .get("Media", {})
+                 .get("recommendations", {})
+                 .get("nodes", []) or [])
+        for n in nodes:
+            mr = n.get("mediaRecommendation") or {}
+            t = mr.get("title") or {}
+            name = (t.get("english") or t.get("romaji") or "").strip()
+            cover = (mr.get("coverImage") or {}).get("medium") or ""
+            if name:
+                recs.append({"name": name, "thumbnail": cover or ""})
+    except Exception:
+        recs = []
+
+    with _anilist_recs_lock:
+        _anilist_recs_cache[title] = recs
+    return recs
+
+
+def recommendations(mode):
+    """Generate personalised recommendations from the user's watch history.
+
+    For the 5 most-recently-watched shows we ask AniList for similar anime,
+    then deduplicate, drop anything the user has already watched, and
+    cross-reference with AllAnime so we only return titles that actually have
+    episodes in *mode*."""
+    hist = read_history()
+    if not hist:
+        return []
+
+    already = {h["id"] for h in hist}
+    seen_names = set()
+    out = []
+
+    # Most-recent first — the newest 5 shows drive recommendations.
+    for h in reversed(hist[-5:]):
+        title = clean_title(h["title"])
+        for rec in _anilist_recommendations(title):
+            rname = rec["name"]
+            if rname in seen_names:
+                continue
+            seen_names.add(rname)
+
+            # Search AllAnime to see if it's available and get the ID.
+            results = search_anime(rname, mode)
+            if not results:
+                continue
+            best = results[0]
+
+            # Skip shows the user already has in history.
+            if best["id"] in already:
+                continue
+
+            # Use the AllAnime thumbnail if available, else the AniList one
+            # (which is always a full URL and needs no proxying).
+            thumb = best["thumbnail"]
+            if not thumb or "/api/cover?title=" in thumb:
+                thumb = rec["thumbnail"] or ""
+
+            out.append({
+                "id": best["id"],
+                "name": best["name"],
+                "thumbnail": _resolve_thumbnail(thumb, best["name"]),
+                "nth": best["nth"],
+                "sub": best["sub"],
+                "dub": best["dub"],
+                "mode": mode,
+                "because": title,
+            })
+
+        # Don't overwhelm — 12 recommendations is plenty.
+        if len(out) >= 12:
+            break
+
+    return out[:12]
 
 
 def continue_watching(mode):
@@ -450,6 +579,9 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/api/continue":
                 mode = q.get("mode", ["sub"])[0]
                 return self._send(200, {"items": continue_watching(mode)})
+            if u.path == "/api/recommendations":
+                mode = q.get("mode", ["sub"])[0]
+                return self._send(200, {"items": recommendations(mode)})
             if u.path == "/api/version":
                 return self._send(200, version_info())
             if u.path == "/api/cover":
