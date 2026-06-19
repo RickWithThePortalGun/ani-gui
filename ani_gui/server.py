@@ -354,12 +354,24 @@ def _downloads_with_status():
         title_lower = d.get("title", "").lower()
         ep = str(d.get("ep", ""))
         matched = []
+        total_bytes = 0
         for f in ddir_files:
             fn = f["name"].lower()
             if ep in fn and any(word in fn for word in title_lower.split()
                                 if len(word) > 2):
                 matched.append(f["path"])
+                total_bytes += f["size"]
         d["files"] = matched
+        # Report download progress if the download is still active and
+        # we found a partial file that's still growing.
+        if d["status"] == "downloading" and matched:
+            # Check if the file is still being written (modified recently).
+            newest = max(f["mtime"] for f in ddir_files
+                         if f["path"] in matched)
+            if now - newest < 10:
+                d["progress_bytes"] = total_bytes
+            else:
+                d["progress_bytes"] = total_bytes
 
     return items
 

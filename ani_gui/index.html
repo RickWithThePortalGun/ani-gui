@@ -743,16 +743,16 @@ async function loadDownloads() {
     if (d.error) throw new Error(d.error);
     renderDownloads(d.items);
     _downloadsDirty = false;
-    // Poll every 3s while the tab is open to update download status.
+    // Poll faster while downloads are active, slower otherwise.
     if (_downloadsPoll) clearInterval(_downloadsPoll);
-    _downloadsPoll = setInterval(refreshDownloadStatus, 3000);
+    const hasActive = d.items.some(i => i.status === "downloading");
+    _downloadsPoll = setInterval(refreshDownloadStatus, hasActive ? 1500 : 5000);
   } catch (err) {
     box.innerHTML = `<div class="empty">Couldn't load download history.</div>`;
   }
 }
 
 async function refreshDownloadStatus() {
-  // Only poll while the Downloads tab is visible.
   if ($("#downloadsView").style.display === "none") {
     if (_downloadsPoll) { clearInterval(_downloadsPoll); _downloadsPoll = null; }
     return;
@@ -761,18 +761,29 @@ async function refreshDownloadStatus() {
     const r = await fetch("/api/downloads");
     const d = await r.json();
     if (d.error) return;
-    // Update status badges in-place without rebuilding the list.
     const items = document.querySelectorAll("#downloadsList .item");
     for (let i = 0; i < Math.min(items.length, d.items.length); i++) {
+      const di = d.items[i];
       const meta = items[i].querySelector(".meta");
-      const status = d.items[i].status || "unknown";
-      const icon = status === "downloading" ? "⏳" : status === "done" ? "✓" : "";
-      if (!meta.textContent.startsWith(icon)) {
-        // Rebuild the meta text preserving the original info but adding icon.
-        const parts = meta.textContent.replace(/^[⏳✓]\s*/, "").split(" · ");
-        meta.textContent = icon ? `${icon} ${parts.join(" · ")}` : parts.join(" · ");
-        // Also update the item styling for active downloads.
-        items[i].style.opacity = status === "downloading" ? "1" : "0.6";
+      const icon = di.status === "downloading" ? "⏳" : di.status === "done" ? "✓" : "";
+      const progress = di.progress_bytes ? ` · ${(di.progress_bytes / 1048576).toFixed(1)} MB` : "";
+      // Rebuild meta text.
+      const parts = meta.textContent.replace(/^[⏳✓]\s*/, "").replace(/ · [\d.]+ MB/, "").split(" · ");
+      meta.textContent = icon ? `${icon} ${parts.join(" · ")}${progress}` : parts.join(" · ");
+      items[i].style.opacity = di.status === "done" ? "0.6" : "1";
+      // Update progress bar.
+      let bar = items[i].querySelector(".prog-bar");
+      if (di.status === "downloading" && di.progress_bytes) {
+        if (!bar) {
+          bar = document.createElement("div");
+          bar.className = "prog-bar";
+          bar.style.cssText = "height:3px;background:var(--border);border-radius:2px;margin-top:4px;overflow:hidden";
+          bar.innerHTML = '<div style="height:100%;background:var(--accent);border-radius:2px;transition:width 1s"></div>';
+          items[i].querySelector("span").appendChild(bar);
+        }
+        bar.firstChild.style.width = Math.min(100, (di.progress_bytes / 50000000) * 100) + "%";
+      } else if (bar && di.status === "done") {
+        bar.firstChild.style.width = "100%";
       }
     }
   } catch (_) {}
@@ -790,14 +801,23 @@ function renderDownloads(items) {
     const el = document.createElement("div");
     el.className = "item";
     const files = d.files || [];
-    const playBtns = files.map(f =>
+    const statusIcon = d.status === "downloading" ? "⏳" : d.status === "done" ? "✓" : "";
+    const progress = d.progress_bytes ? ` · ${(d.progress_bytes / 1048576).toFixed(1)} MB` : "";
+    const playBtns = (files || []).map(f =>
       `<button class="play-file-btn" data-path="${escHtml(f)}" style="font-size:11px;padding:4px 8px;margin-left:4px">▶ ${escHtml(f.split('/').pop().slice(0,30))}</button>`
     ).join("");
+    const bar = d.status === "downloading" && d.progress_bytes
+      ? `<div style="height:3px;background:var(--border);border-radius:2px;margin-top:4px;overflow:hidden"><div style="height:100%;width:${Math.min(100, (d.progress_bytes / 50000000) * 100)}%;background:var(--accent);border-radius:2px;transition:width 1s"></div></div>`
+      : "";
     el.innerHTML = `
       <span class="cover"></span>
-      <span class="name">${escHtml(d.title)} — ep ${escHtml(String(d.ep))}</span>
-      <span class="meta">${escHtml(d.mode)} · ${escHtml(d.quality)} · ${escHtml(d.time)}${playBtns}</span>`;
-    el.title = `Saved to: ${d.dir}`;
+      <span style="flex:1;min-width:0">
+        <span class="name" style="display:block">${escHtml(d.title)} — ep ${escHtml(String(d.ep))}</span>
+        <span class="meta">${statusIcon} ${escHtml(d.mode)} · ${escHtml(d.quality)} · ${escHtml(d.time)}${progress}${playBtns}</span>
+        ${bar}
+      </span>`;
+    el.title = files.length ? `Files: ${files.join(', ')}` : `Saved to: ${d.dir}`;
+    el.style.opacity = d.status === "done" ? "0.6" : "1";
     list.appendChild(el);
   }
   // Wire play-file buttons.
