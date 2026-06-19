@@ -691,6 +691,32 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, {"items": _downloads_with_status()})
             if u.path == "/api/settings":
                 return self._send(200, _read_settings())
+            if u.path == "/api/browse-dir":
+                # Open a native folder picker and return the chosen path.
+                try:
+                    import platform
+                    if platform.system() == "Darwin":
+                        script = ('tell application "System Events" to '
+                                  'POSIX path of (choose folder with prompt '
+                                  '"Choose download directory for ani-gui")')
+                        out = subprocess.run(
+                            ["osascript", "-e", script],
+                            capture_output=True, text=True, timeout=60)
+                        path = out.stdout.strip()
+                        if path:
+                            return self._send(200, {"path": path})
+                    # Linux fallback: try zenity if available.
+                    if shutil.which("zenity"):
+                        out = subprocess.run(
+                            ["zenity", "--file-selection", "--directory",
+                             "--title=Choose download directory for ani-gui"],
+                            capture_output=True, text=True, timeout=60)
+                        path = out.stdout.strip()
+                        if path:
+                            return self._send(200, {"path": path})
+                    return self._send(200, {"path": ""})
+                except Exception as e:
+                    return self._send(500, {"error": str(e)})
             if u.path == "/api/version":
                 return self._send(200, version_info())
             if u.path == "/api/cover":

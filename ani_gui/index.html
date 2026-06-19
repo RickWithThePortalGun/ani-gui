@@ -236,6 +236,7 @@
     <div class="hint">Episodes you've asked ani-gui to download via ani-cli.</div>
     <div class="bar" style="margin-bottom:14px">
       <input type="text" id="dlDir" placeholder="Download directory (default: current dir)" autocomplete="off">
+      <button id="dlDirBrowse" title="Pick a folder">Browse</button>
       <button id="dlDirSave">Save</button>
     </div>
     <div id="downloadsList"></div>
@@ -295,6 +296,23 @@ $("#dlDirSave").addEventListener("click", async () => {
     btn.textContent = "Error";
     btn.disabled = false;
   }
+});
+
+$("#dlDirBrowse").addEventListener("click", async () => {
+  const btn = $("#dlDirBrowse");
+  btn.disabled = true;
+  btn.textContent = "…";
+  try {
+    const r = await fetch("/api/browse-dir");
+    const d = await r.json();
+    if (d.path) {
+      $("#dlDir").value = d.path;
+      // Auto-save on pick.
+      $("#dlDirSave").click();
+    }
+  } catch (_) {}
+  btn.textContent = "Browse";
+  btn.disabled = false;
 });
 
 $("#bannerClose").addEventListener("click", () => $("#banner").classList.remove("show"));
