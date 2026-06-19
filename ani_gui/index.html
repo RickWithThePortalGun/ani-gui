@@ -265,6 +265,7 @@ document.querySelectorAll(".tab").forEach(t => t.addEventListener("click", () =>
   if (tab === "continue") loadContinue();
   if (tab === "for-you") loadForYou();
   if (tab === "downloads") loadDownloads();
+  else { if (_downloadsPoll) { clearInterval(_downloadsPoll); _downloadsPoll = null; } }
 }));
 
 $("#mode").addEventListener("change", e => {
@@ -476,7 +477,8 @@ async function doPlay(els, download) {
             const now = new Date().toISOString().replace("T"," ").slice(0,16);
             const el = document.createElement("div");
             el.className = "item";
-            el.innerHTML = `<span class="cover"></span><span class="name">${escHtml(title)} — ep ${escHtml(String(ep))}</span><span class="meta">${escHtml(state.mode)} · ${escHtml(qual)} · ${escHtml(now)}</span>`;
+            el.style.opacity = "1";
+            el.innerHTML = `<span class="cover"></span><span class="name">${escHtml(title)} — ep ${escHtml(String(ep))}</span><span class="meta">⏳ ${escHtml(state.mode)} · ${escHtml(qual)} · ${escHtml(now)}</span>`;
             listBox.insertBefore(el, listBox.firstChild);
           }
         }
@@ -629,11 +631,10 @@ function escHtml(s) {
 }
 
 let _downloadsDirty = false;
+let _downloadsPoll = null;
 
 async function loadDownloads() {
   const box = $("#downloadsList");
-  // Re-fetch if dirty or first load.
-  if (!_downloadsDirty && box.querySelector(".list")) return;
   box.innerHTML = `<div class="spin">Loading…</div>`;
   try {
     const r = await fetch("/api/downloads");
@@ -641,9 +642,39 @@ async function loadDownloads() {
     if (d.error) throw new Error(d.error);
     renderDownloads(d.items);
     _downloadsDirty = false;
+    // Poll every 3s while the tab is open to update download status.
+    if (_downloadsPoll) clearInterval(_downloadsPoll);
+    _downloadsPoll = setInterval(refreshDownloadStatus, 3000);
   } catch (err) {
     box.innerHTML = `<div class="empty">Couldn't load download history.</div>`;
   }
+}
+
+async function refreshDownloadStatus() {
+  // Only poll while the Downloads tab is visible.
+  if ($("#downloadsView").style.display === "none") {
+    if (_downloadsPoll) { clearInterval(_downloadsPoll); _downloadsPoll = null; }
+    return;
+  }
+  try {
+    const r = await fetch("/api/downloads");
+    const d = await r.json();
+    if (d.error) return;
+    // Update status badges in-place without rebuilding the list.
+    const items = document.querySelectorAll("#downloadsList .item");
+    for (let i = 0; i < Math.min(items.length, d.items.length); i++) {
+      const meta = items[i].querySelector(".meta");
+      const status = d.items[i].status || "unknown";
+      const icon = status === "downloading" ? "⏳" : status === "done" ? "✓" : "";
+      if (!meta.textContent.startsWith(icon)) {
+        // Rebuild the meta text preserving the original info but adding icon.
+        const parts = meta.textContent.replace(/^[⏳✓]\s*/, "").split(" · ");
+        meta.textContent = icon ? `${icon} ${parts.join(" · ")}` : parts.join(" · ");
+        // Also update the item styling for active downloads.
+        items[i].style.opacity = status === "downloading" ? "1" : "0.6";
+      }
+    }
+  } catch (_) {}
 }
 
 function renderDownloads(items) {

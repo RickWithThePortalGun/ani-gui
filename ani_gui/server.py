@@ -232,7 +232,7 @@ def _write_downloads(items):
             json.dump(items, f, indent=2)
 
 
-def _record_download(title, ep, quality, mode):
+def _record_download(title, ep, quality, mode, pid=None):
     """Add a download entry and persist immediately."""
     items = _read_downloads()
     # Remove any older entry for the same title+ep (duplicate).
@@ -246,9 +246,27 @@ def _record_download(title, ep, quality, mode):
         "time": time.strftime("%Y-%m-%d %H:%M"),
         "dir": os.environ.get("ANI_CLI_DOWNLOAD_DIR")
                or os.getcwd(),
+        "pid": pid,
     })
     # Keep at most 50 entries.
     _write_downloads(items[:50])
+
+
+def _downloads_with_status():
+    """Return the download log with live status (running vs done)."""
+    items = _read_downloads()
+    for d in items:
+        pid = d.get("pid")
+        if pid is None:
+            d["status"] = "unknown"
+        else:
+            try:
+                # Signal 0 just checks if the process exists.
+                os.kill(pid, 0)
+                d["status"] = "downloading"
+            except (OSError, ProcessLookupError):
+                d["status"] = "done"
+    return items
 
 
 def _anilist_post(query, variables):
@@ -456,10 +474,10 @@ def play(query, nth, ep, quality, mode, download=False, player="default"):
     plabel = "the downloader" if download else _player_label(player)
 
     if download:
-        subprocess.Popen(cmd, stdin=subprocess.DEVNULL,
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                         env=env, start_new_session=True)
-        _record_download(query, ep, quality, mode)
+        proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                env=env, start_new_session=True)
+        _record_download(query, ep, quality, mode, pid=proc.pid)
         return {"ok": True, "stage": "download",
                 "message": f"Downloading episode {ep} in the background "
                            "(saved to ani-cli's download dir)."}
@@ -635,7 +653,7 @@ class Handler(BaseHTTPRequestHandler):
                 mode = q.get("mode", ["sub"])[0]
                 return self._send(200, {"items": recommendations(mode)})
             if u.path == "/api/downloads":
-                return self._send(200, {"items": _read_downloads()})
+                return self._send(200, {"items": _downloads_with_status()})
             if u.path == "/api/version":
                 return self._send(200, version_info())
             if u.path == "/api/cover":
