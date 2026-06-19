@@ -789,13 +789,37 @@ function renderDownloads(items) {
   for (const d of items) {
     const el = document.createElement("div");
     el.className = "item";
+    const files = d.files || [];
+    const playBtns = files.map(f =>
+      `<button class="play-file-btn" data-path="${escHtml(f)}" style="font-size:11px;padding:4px 8px;margin-left:4px">▶ ${escHtml(f.split('/').pop().slice(0,30))}</button>`
+    ).join("");
     el.innerHTML = `
       <span class="cover"></span>
       <span class="name">${escHtml(d.title)} — ep ${escHtml(String(d.ep))}</span>
-      <span class="meta">${escHtml(d.mode)} · ${escHtml(d.quality)} · ${escHtml(d.time)}</span>`;
+      <span class="meta">${escHtml(d.mode)} · ${escHtml(d.quality)} · ${escHtml(d.time)}${playBtns}</span>`;
     el.title = `Saved to: ${d.dir}`;
     list.appendChild(el);
   }
+  // Wire play-file buttons.
+  list.querySelectorAll(".play-file-btn").forEach(btn => {
+    btn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      const path = btn.dataset.path;
+      btn.disabled = true;
+      btn.textContent = "…";
+      try {
+        const r = await fetch("/api/play-file", {
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({path, player: state.player}),
+        });
+        const d = await r.json();
+        btn.textContent = d.ok ? "▶" : "✗";
+      } catch (_) {
+        btn.textContent = "✗";
+      }
+      setTimeout(() => { btn.disabled = false; }, 2000);
+    });
+  });
   box.insertAdjacentHTML("beforeend",
     `<div class="hint" style="margin-top:12px">Files saved to <code>${escHtml(items[0].dir)}</code> (or <code>$ANI_CLI_DOWNLOAD_DIR</code> if set).</div>`);
 }

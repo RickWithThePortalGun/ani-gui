@@ -283,8 +283,34 @@ def _record_download(title, ep, quality, mode, pid=None):
     _write_downloads(items[:50])
 
 
+def _scan_download_files():
+    """List video files in the download directory."""
+    ddir = _download_dir()
+    exts = {".mp4", ".mkv", ".webm", ".avi", ".mov", ".flv", ".m4v"}
+    files = []
+    try:
+        for name in os.listdir(ddir):
+            if os.path.splitext(name)[1].lower() in exts:
+                full = os.path.join(ddir, name)
+                try:
+                    st = os.stat(full)
+                    files.append({
+                        "name": name,
+                        "path": full,
+                        "size": st.st_size,
+                        "mtime": st.st_mtime,
+                    })
+                except OSError:
+                    pass
+    except FileNotFoundError:
+        pass
+    # Newest first.
+    files.sort(key=lambda f: f["mtime"], reverse=True)
+    return files
+
+
 def _downloads_with_status():
-    """Return the download log with live status.
+    """Return the download log with live status and matched files.
 
     Uses three signals to determine whether a download is still active:
     1. PID still alive → downloading
@@ -292,7 +318,9 @@ def _downloads_with_status():
     3. Otherwise → done
     """
     items = _read_downloads()
+    ddir_files = _scan_download_files()
     now = time.time()
+
     for d in items:
         pid = d.get("pid")
         alive = False
@@ -313,15 +341,26 @@ def _downloads_with_status():
         if alive:
             d["status"] = "downloading"
         elif d.get("status") == "downloading" and age < 180:
-            # Was marked downloading and is still fresh — keep the status.
             d["status"] = "downloading"
         elif age < 180:
-            # Fresh download, PID gone but might still be in progress via child.
             d["status"] = "downloading"
         elif pid is not None:
             d["status"] = "done"
         else:
             d["status"] = "done"
+
+        # Match download entries to actual files in the directory.
+        # Fuzzy: the file name should contain the title and episode number.
+        title_lower = d.get("title", "").lower()
+        ep = str(d.get("ep", ""))
+        matched = []
+        for f in ddir_files:
+            fn = f["name"].lower()
+            if ep in fn and any(word in fn for word in title_lower.split()
+                                if len(word) > 2):
+                matched.append(f["path"])
+        d["files"] = matched
+
     return items
 
 
@@ -857,6 +896,35 @@ class Handler(BaseHTTPRequestHandler):
                     s["download_dir"] = body["download_dir"]
                 _write_settings(s)
                 return self._send(200, s)
+            if u.path == "/api/play-file":
+                path = body.get("path", "")
+                player = body.get("player", "default")
+                if not path or not os.path.isfile(path):
+                    return self._send(404, {"error": "file not found"})
+                # Pick the right player binary.
+                if player == "vlc" and shutil.which("vlc"):
+                    cmd = ["vlc", path]
+                elif shutil.which("iina"):
+                    cmd = ["iina", "--no-stdin", path]
+                elif shutil.which("mpv"):
+                    cmd = ["mpv", path]
+                elif shutil.which("vlc"):
+                    cmd = ["vlc", path]
+                else:
+                    # Last resort: let the OS pick.
+                    import platform
+                    if platform.system() == "Darwin":
+                        cmd = ["open", path]
+                    elif platform.system() == "Windows":
+                        cmd = ["start", "", path]
+                    else:
+                        cmd = ["xdg-open", path]
+                subprocess.Popen(cmd, stdin=subprocess.DEVNULL,
+                                 stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL,
+                                 start_new_session=True)
+                return self._send(200, {"ok": True,
+                                        "message": f"Opening {os.path.basename(path)}"})
             return self._send(404, {"error": "not found"})
         except Exception as e:
             return self._send(500, {"error": str(e)})
