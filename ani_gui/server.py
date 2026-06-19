@@ -29,7 +29,7 @@ from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-VERSION = "0.2.3"
+VERSION = "0.3.0"
 ANI_CLI_RAW = "https://raw.githubusercontent.com/pystardust/ani-cli/master/ani-cli"
 
 # --- AllAnime API (mirrors the constants inside the ani-cli script) ----------
@@ -284,19 +284,44 @@ def _record_download(title, ep, quality, mode, pid=None):
 
 
 def _downloads_with_status():
-    """Return the download log with live status (running vs done)."""
+    """Return the download log with live status.
+
+    Uses three signals to determine whether a download is still active:
+    1. PID still alive → downloading
+    2. Started less than 3 minutes ago → downloading (assume still in progress)
+    3. Otherwise → done
+    """
     items = _read_downloads()
+    now = time.time()
     for d in items:
         pid = d.get("pid")
-        if pid is None:
-            d["status"] = "unknown"
-        else:
+        alive = False
+        if pid is not None:
             try:
-                # Signal 0 just checks if the process exists.
                 os.kill(pid, 0)
-                d["status"] = "downloading"
+                alive = True
             except (OSError, ProcessLookupError):
-                d["status"] = "done"
+                pass
+
+        # Parse the recorded time to estimate age.
+        try:
+            t = time.mktime(time.strptime(d.get("time", ""), "%Y-%m-%d %H:%M"))
+            age = now - t
+        except (ValueError, OverflowError):
+            age = 999
+
+        if alive:
+            d["status"] = "downloading"
+        elif d.get("status") == "downloading" and age < 180:
+            # Was marked downloading and is still fresh — keep the status.
+            d["status"] = "downloading"
+        elif age < 180:
+            # Fresh download, PID gone but might still be in progress via child.
+            d["status"] = "downloading"
+        elif pid is not None:
+            d["status"] = "done"
+        else:
+            d["status"] = "done"
     return items
 
 
@@ -695,7 +720,9 @@ class Handler(BaseHTTPRequestHandler):
                 # Open a native folder picker and return the chosen path.
                 try:
                     import platform
-                    if platform.system() == "Darwin":
+                    system = platform.system()
+                    path = ""
+                    if system == "Darwin":
                         script = ('tell application "System Events" to '
                                   'POSIX path of (choose folder with prompt '
                                   '"Choose download directory for ani-gui")')
@@ -703,18 +730,39 @@ class Handler(BaseHTTPRequestHandler):
                             ["osascript", "-e", script],
                             capture_output=True, text=True, timeout=60)
                         path = out.stdout.strip()
-                        if path:
-                            return self._send(200, {"path": path})
-                    # Linux fallback: try zenity if available.
-                    if shutil.which("zenity"):
+                    elif system == "Windows":
+                        import tempfile
+                        ps = os.path.join(tempfile.gettempdir(),
+                                          "ani_gui_picker.ps1")
+                        with open(ps, "w") as f:
+                            f.write(
+                                'Add-Type -AssemblyName System.Windows.Forms\n'
+                                '$f = New-Object System.Windows.Forms.FolderBrowserDialog\n'
+                                '$f.Description = "Choose download directory for ani-gui"\n'
+                                'if ($f.ShowDialog() -eq "OK") { $f.SelectedPath }\n')
                         out = subprocess.run(
-                            ["zenity", "--file-selection", "--directory",
-                             "--title=Choose download directory for ani-gui"],
+                            ["powershell", "-ExecutionPolicy", "Bypass",
+                             "-File", ps],
                             capture_output=True, text=True, timeout=60)
                         path = out.stdout.strip()
-                        if path:
-                            return self._send(200, {"path": path})
-                    return self._send(200, {"path": ""})
+                        try:
+                            os.unlink(ps)
+                        except OSError:
+                            pass
+                    else:
+                        # Linux: try zenity, kdialog, then fall back.
+                        for cmd in (["zenity", "--file-selection",
+                                     "--directory",
+                                     "--title=Choose download directory for ani-gui"],
+                                    ["kdialog", "--getexistingdirectory"]):
+                            if shutil.which(cmd[0]):
+                                out = subprocess.run(
+                                    cmd, capture_output=True, text=True,
+                                    timeout=60)
+                                path = out.stdout.strip()
+                                if path:
+                                    break
+                    return self._send(200, {"path": path})
                 except Exception as e:
                     return self._send(500, {"error": str(e)})
             if u.path == "/api/version":
