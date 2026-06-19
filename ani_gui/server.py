@@ -793,13 +793,16 @@ class Handler(BaseHTTPRequestHandler):
                     system = platform.system()
                     path = ""
                     if system == "Darwin":
-                        script = ('tell application "System Events" to '
-                                  'POSIX path of (choose folder with prompt '
-                                  '"Choose download directory for ani-gui")')
+                        # choose folder is a StandardAdditions command —
+                        # no System Events permission needed.
+                        script = (
+                            'set f to choose folder with prompt '
+                            '"Choose download directory for ani-gui"\n'
+                            'POSIX path of f')
                         out = subprocess.run(
                             ["osascript", "-e", script],
-                            capture_output=True, text=True, timeout=60)
-                        path = out.stdout.strip()
+                            capture_output=True, text=True, timeout=300)
+                        path = out.stdout.strip() if out.returncode == 0 else ""
                     elif system == "Windows":
                         import tempfile
                         ps = os.path.join(tempfile.gettempdir(),

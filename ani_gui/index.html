@@ -236,7 +236,8 @@
     <div class="hint">Episodes you've asked ani-gui to download via ani-cli.</div>
     <div class="bar" style="margin-bottom:14px">
       <input type="text" id="dlDir" placeholder="Download directory (default: current dir)" autocomplete="off">
-      <button id="dlDirBrowse" title="Pick a folder">Browse</button>
+      <input type="file" id="dlDirPicker" webkitdirectory style="display:none">
+      <button id="dlDirBrowse">Browse</button>
       <button id="dlDirSave">Save</button>
     </div>
     <div id="downloadsList"></div>
@@ -307,8 +308,7 @@ $("#dlDirBrowse").addEventListener("click", async () => {
     const d = await r.json();
     if (d.path) {
       $("#dlDir").value = d.path;
-      // Auto-save on pick.
-      $("#dlDirSave").click();
+      $("#dlDirSave").click();  // auto-save
     }
   } catch (_) {}
   btn.textContent = "Browse";
