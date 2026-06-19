@@ -234,6 +234,10 @@
 
   <div id="downloadsView" style="display:none">
     <div class="hint">Episodes you've asked ani-gui to download via ani-cli.</div>
+    <div class="bar" style="margin-bottom:14px">
+      <input type="text" id="dlDir" placeholder="Download directory (default: current dir)" autocomplete="off">
+      <button id="dlDirSave">Save</button>
+    </div>
     <div id="downloadsList"></div>
   </div>
 
@@ -275,6 +279,23 @@ $("#mode").addEventListener("change", e => {
 });
 
 $("#player").addEventListener("change", e => { state.player = e.target.value; });
+
+$("#dlDirSave").addEventListener("click", async () => {
+  const dir = $("#dlDir").value.trim();
+  const btn = $("#dlDirSave");
+  btn.disabled = true;
+  try {
+    await fetch("/api/settings", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({download_dir: dir}),
+    });
+    btn.textContent = "Saved";
+    setTimeout(() => { btn.textContent = "Save"; btn.disabled = false; }, 1500);
+  } catch (_) {
+    btn.textContent = "Error";
+    btn.disabled = false;
+  }
+});
 
 $("#bannerClose").addEventListener("click", () => $("#banner").classList.remove("show"));
 
@@ -402,6 +423,7 @@ function renderDetail(a, episodes, el) {
         </select>
         <button class="primary play-btn" disabled>Play</button>
         <button class="dl-btn" disabled>Download</button>
+        <button class="dl-all-btn" disabled title="Download every episode">Download All</button>
       </div>
       <div class="status" style="min-height:16px"></div>
     </div>`;
@@ -412,6 +434,7 @@ function renderDetail(a, episodes, el) {
   const status = panel.querySelector(".status");
   const playBtn = panel.querySelector(".play-btn");
   const dlBtn = panel.querySelector(".dl-btn");
+  const dlAllBtn = panel.querySelector(".dl-all-btn");
 
   const epsBox = panel.querySelector(".eps");
   if (!episodes.length) {
@@ -428,12 +451,14 @@ function renderDetail(a, episodes, el) {
       state.ep = ep;
       playBtn.disabled = false;
       dlBtn.disabled = false;
+      dlAllBtn.disabled = false;
     });
     epsBox.appendChild(b);
   }
 
   playBtn.addEventListener("click", (e) => { e.stopPropagation(); doPlay({panel, status, playBtn, dlBtn}, false); });
   dlBtn.addEventListener("click", (e) => { e.stopPropagation(); doPlay({panel, status, playBtn, dlBtn}, true); });
+  dlAllBtn.addEventListener("click", (e) => { e.stopPropagation(); downloadAll({panel, status, playBtn, dlBtn, dlAllBtn}, episodes); });
 }
 
 async function doPlay(els, download) {
@@ -492,6 +517,45 @@ async function doPlay(els, download) {
     playBtn.disabled = false;
     dlBtn && (dlBtn.disabled = false);
   }
+}
+
+async function downloadAll(els, episodes) {
+  const { status, playBtn, dlBtn, dlAllBtn } = els;
+  dlAllBtn.disabled = true;
+  playBtn.disabled = true;
+  dlBtn && (dlBtn.disabled = true);
+
+  let done = 0;
+  const total = episodes.length;
+  setStatus(status, "work", `Downloading ${total} episodes…`);
+
+  for (const ep of episodes) {
+    setStatus(status, "work", `Downloading ep ${ep} (${done + 1} / ${total})…`);
+    try {
+      await fetch("/api/play", {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+          query: $("#q").value.trim(),
+          nth: state.selected.nth,
+          ep,
+          quality: els.panel.querySelector(".quality-select").value,
+          mode: state.mode,
+          player: state.player,
+          download: true,
+        })});
+      done++;
+    } catch (_) {
+      // continue with next episode even if one fails
+    }
+    // Small delay between requests to be polite to the API.
+    await new Promise(r => setTimeout(r, 1000));
+  }
+
+  _downloadsDirty = true;
+  setStatus(status, "ok", `Queued ${done} of ${total} episodes for download.`);
+  playBtn.disabled = !state.ep;
+  dlBtn && (dlBtn.disabled = !state.ep);
+  dlAllBtn.disabled = false;
 }
 
 function setStatus(el, kind, text) {
@@ -634,6 +698,14 @@ let _downloadsDirty = false;
 let _downloadsPoll = null;
 
 async function loadDownloads() {
+  // Load settings for the download-directory input.
+  try {
+    const sr = await fetch("/api/settings");
+    const settings = await sr.json();
+    const inp = $("#dlDir");
+    if (inp && settings.download_dir) inp.value = settings.download_dir;
+  } catch (_) {}
+
   const box = $("#downloadsList");
   box.innerHTML = `<div class="spin">Loading…</div>`;
   try {

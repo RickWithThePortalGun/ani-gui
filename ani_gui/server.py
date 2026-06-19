@@ -73,7 +73,39 @@ DLFILE = os.path.join(
                     or os.path.expanduser("~/.local/state"), "ani-cli"),
     "ani-downloads.json")
 
+# User settings — a tiny JSON file next to the other ani-cli state.
+SETTINGS_FILE = os.path.join(
+    os.environ.get("ANI_CLI_HIST_DIR")
+    or os.path.join(os.environ.get("XDG_STATE_HOME")
+                    or os.path.expanduser("~/.local/state"), "ani-cli"),
+    "ani-gui-settings.json")
+
 _downloads_lock = threading.Lock()
+_settings_lock = threading.Lock()
+
+
+def _read_settings():
+    try:
+        with open(SETTINGS_FILE) as f:
+            return json.loads(f.read() or "{}")
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _write_settings(s):
+    with _settings_lock:
+        os.makedirs(os.path.dirname(SETTINGS_FILE), exist_ok=True)
+        with open(SETTINGS_FILE, "w") as f:
+            json.dump(s, f, indent=2)
+
+
+def _download_dir():
+    """Effective download directory: env var > settings > cwd."""
+    env = os.environ.get("ANI_CLI_DOWNLOAD_DIR")
+    if env:
+        return env
+    s = _read_settings().get("download_dir", "")
+    return s or os.getcwd()
 
 
 def _api_post(payload):
@@ -244,8 +276,7 @@ def _record_download(title, ep, quality, mode, pid=None):
         "quality": quality,
         "mode": mode,
         "time": time.strftime("%Y-%m-%d %H:%M"),
-        "dir": os.environ.get("ANI_CLI_DOWNLOAD_DIR")
-               or os.getcwd(),
+        "dir": _download_dir(),
         "pid": pid,
     })
     # Keep at most 50 entries.
@@ -470,6 +501,10 @@ def play(query, nth, ep, quality, mode, download=False, player="default"):
     # Make sure ani-cli can find the players/curl even if the server was
     # started from a minimal environment.
     env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:" + env.get("PATH", "")
+    # Use the configured download directory for ani-cli.
+    ddir = _download_dir()
+    if ddir:
+        env["ANI_CLI_DOWNLOAD_DIR"] = ddir
 
     plabel = "the downloader" if download else _player_label(player)
 
@@ -654,6 +689,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, {"items": recommendations(mode)})
             if u.path == "/api/downloads":
                 return self._send(200, {"items": _downloads_with_status()})
+            if u.path == "/api/settings":
+                return self._send(200, _read_settings())
             if u.path == "/api/version":
                 return self._send(200, version_info())
             if u.path == "/api/cover":
@@ -721,6 +758,12 @@ class Handler(BaseHTTPRequestHandler):
                            player=body.get("player", "default"),
                            download=bool(body.get("download")))
                 return self._send(200 if res.get("ok") else 502, res)
+            if u.path == "/api/settings":
+                s = _read_settings()
+                if "download_dir" in body:
+                    s["download_dir"] = body["download_dir"]
+                _write_settings(s)
+                return self._send(200, s)
             return self._send(404, {"error": "not found"})
         except Exception as e:
             return self._send(500, {"error": str(e)})
