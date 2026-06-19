@@ -392,10 +392,6 @@ function renderDetail(a, episodes, el) {
     <div class="panel">
       <div class="eps"></div>
       <div class="actions">
-        <select class="ep-select" title="Episode">
-          <option value="">— pick episode —</option>
-          ${episodes.map(ep => `<option value="${ep}">Ep ${ep}</option>`).join("")}
-        </select>
         <select class="quality-select" title="Quality">
           <option value="best">Best</option>
           <option value="1080">1080p</option>
@@ -409,46 +405,34 @@ function renderDetail(a, episodes, el) {
       <div class="status" style="min-height:16px"></div>
     </div>`;
 
+  // Stop clicks inside the detail panel from collapsing the item.
+  panel.addEventListener("click", e => e.stopPropagation());
+
   const status = panel.querySelector(".status");
   const playBtn = panel.querySelector(".play-btn");
   const dlBtn = panel.querySelector(".dl-btn");
-  const epSel = panel.querySelector(".ep-select");
 
-  // Populate the episode grid.
   const epsBox = panel.querySelector(".eps");
+  if (!episodes.length) {
+    epsBox.innerHTML = `<span class="empty">No episodes available.</span>`;
+  }
   for (const ep of episodes) {
     const b = document.createElement("div");
     b.className = "ep";
     b.textContent = ep;
-    b.addEventListener("click", () => {
+    b.addEventListener("click", (e) => {
+      e.stopPropagation();
       epsBox.querySelectorAll(".ep").forEach(x => x.classList.remove("sel"));
       b.classList.add("sel");
       state.ep = ep;
-      epSel.value = ep;
       playBtn.disabled = false;
       dlBtn.disabled = false;
     });
     epsBox.appendChild(b);
   }
 
-  epSel.addEventListener("change", () => {
-    state.ep = epSel.value || null;
-    playBtn.disabled = !state.ep;
-    dlBtn.disabled = !state.ep;
-    if (state.ep) {
-      epsBox.querySelectorAll(".ep").forEach(x => x.classList.remove("sel"));
-      const match = epsBox.querySelector(`.ep:nth-child(${episodes.indexOf(state.ep) + 1})`);
-      if (match) { match.classList.add("sel"); epSel.value = state.ep; }
-    }
-  });
-
-  if (episodes.length === 0) {
-    epSel.disabled = true;
-    epSel.innerHTML = `<option value="">No episodes</option>`;
-  }
-
-  playBtn.addEventListener("click", () => doPlay({panel, status, playBtn, dlBtn}, false));
-  dlBtn.addEventListener("click", () => doPlay({panel, status, playBtn, dlBtn}, true));
+  playBtn.addEventListener("click", (e) => { e.stopPropagation(); doPlay({panel, status, playBtn, dlBtn}, false); });
+  dlBtn.addEventListener("click", (e) => { e.stopPropagation(); doPlay({panel, status, playBtn, dlBtn}, true); });
 }
 
 async function doPlay(els, download) {
