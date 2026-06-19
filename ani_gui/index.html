@@ -1,0 +1,445 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ani-gui</title>
+<style>
+  :root {
+    --bg: #0f0f0f;
+    --surface: #1a1a1a;
+    --surface-2: #202020;
+    --border: #2a2a2a;
+    --border-strong: #3a3a3a;
+    --text: #f0f0f0;
+    --muted: #8a8a8a;
+    --faint: #5f5f5f;
+    --accent: #00d4aa;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.5 ui-sans-serif, -apple-system, "SF Pro Text", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 28px 20px 64px; }
+
+  header { display: flex; align-items: baseline; gap: 10px; margin-bottom: 20px; }
+  header h1 { font-size: 17px; font-weight: 600; margin: 0; letter-spacing: -0.01em; }
+  header span { color: var(--faint); font-size: 13px; }
+
+  .bar { display: flex; gap: 8px; margin-bottom: 8px; }
+  input[type=text] {
+    flex: 1; background: var(--surface); color: var(--text);
+    border: 1px solid var(--border); border-radius: 8px;
+    padding: 10px 12px; font-size: 14px; outline: none;
+  }
+  input[type=text]:focus { border-color: var(--border-strong); }
+  select, button {
+    background: var(--surface); color: var(--text);
+    border: 1px solid var(--border); border-radius: 8px;
+    padding: 10px 12px; font-size: 13px; cursor: pointer; outline: none;
+  }
+  button:hover, select:hover { border-color: var(--border-strong); }
+  button.primary { background: var(--accent); color: #06231d; border-color: var(--accent); font-weight: 600; }
+  button.primary:hover { filter: brightness(1.06); }
+  button:disabled { opacity: .5; cursor: default; }
+
+  .hint { color: var(--faint); font-size: 12px; margin: 4px 0 16px; }
+
+  .tabs { display: flex; gap: 18px; border-bottom: 1px solid var(--border); margin-bottom: 18px; }
+  .tab {
+    background: none; border: none; border-bottom: 2px solid transparent;
+    color: var(--muted); padding: 8px 2px; font-size: 13px; cursor: pointer; border-radius: 0;
+  }
+  .tab:hover { color: var(--text); border-color: transparent; }
+  .tab.active { color: var(--text); border-bottom-color: var(--accent); }
+
+  .list { display: flex; flex-direction: column; gap: 6px; }
+  .item {
+    display: flex; align-items: center; gap: 12px; padding: 9px 11px;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; cursor: pointer;
+  }
+  .item:hover { background: var(--surface-2); }
+  .item.active { border-color: var(--accent); }
+  .item .name { font-weight: 500; flex: 1; }
+  .item .meta { color: var(--muted); font-size: 12px; white-space: nowrap; }
+  .cover {
+    width: 38px; height: 52px; flex: none; object-fit: cover;
+    border-radius: 5px; background: var(--surface-2); border: 1px solid var(--border);
+  }
+  .cover.lg { width: 64px; height: 88px; border-radius: 6px; }
+
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
+  .card {
+    display: flex; gap: 12px; padding: 12px; background: var(--surface);
+    border: 1px solid var(--border); border-radius: 8px;
+  }
+  .card .body { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+  .card .title { font-weight: 500; line-height: 1.3; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+  .card .prog { color: var(--muted); font-size: 12px; margin: 4px 0 10px; }
+  .card button { margin-top: auto; align-self: flex-start; padding: 7px 11px; font-size: 12px; }
+
+  .panel {
+    margin-top: 14px; background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; padding: 16px;
+  }
+  .panel h2 { font-size: 14px; font-weight: 600; margin: 0 0 2px; }
+  .panel .sub { color: var(--muted); font-size: 12px; margin-bottom: 14px; }
+
+  .eps { display: flex; flex-wrap: wrap; gap: 6px; }
+  .ep {
+    min-width: 40px; text-align: center; padding: 7px 9px;
+    background: var(--surface-2); border: 1px solid var(--border);
+    border-radius: 6px; font-size: 13px; cursor: pointer; color: var(--text);
+  }
+  .ep:hover { border-color: var(--border-strong); }
+  .ep.sel { background: var(--accent); color: #06231d; border-color: var(--accent); font-weight: 600; }
+
+  .actions { display: flex; align-items: center; gap: 10px; margin-top: 16px; }
+  .status { color: var(--muted); font-size: 12px; min-height: 16px; margin-top: 12px; }
+  .status.err { color: #ff7a7a; }
+  .status.ok { color: var(--accent); }
+  .status.work { color: var(--text); }
+  .empty { color: var(--faint); font-size: 13px; padding: 24px 4px; }
+  .spin { color: var(--faint); font-size: 13px; padding: 16px 4px; }
+
+  .banner {
+    display: none; align-items: flex-start; gap: 10px; margin-bottom: 16px;
+    padding: 11px 13px; border: 1px solid var(--border-strong);
+    border-radius: 8px; background: var(--surface); font-size: 13px;
+  }
+  .banner.show { display: flex; }
+  .banner.warn { border-color: #5a4a1f; }
+  .banner code {
+    background: var(--surface-2); border: 1px solid var(--border);
+    border-radius: 5px; padding: 1px 6px; font-size: 12px;
+  }
+  .banner .x {
+    margin-left: auto; color: var(--faint); cursor: pointer;
+    border: none; background: none; padding: 0 2px; font-size: 15px;
+  }
+  footer {
+    margin-top: 40px; padding-top: 14px; border-top: 1px solid var(--border);
+    display: flex; gap: 14px; flex-wrap: wrap; align-items: center;
+    color: var(--faint); font-size: 12px;
+  }
+  footer a { color: var(--muted); text-decoration: none; }
+  footer a:hover { color: var(--text); }
+  .dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; vertical-align: middle; margin-right: 5px; }
+  .dot.ok { background: var(--accent); }
+  .dot.bad { background: #c46; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>ani-gui</h1>
+    <span>front-end for ani-cli</span>
+  </header>
+
+  <div class="banner" id="banner">
+    <div id="bannerText"></div>
+    <button class="x" id="bannerClose" title="Dismiss">×</button>
+  </div>
+
+  <div class="tabs">
+    <button class="tab active" data-tab="search">Search</button>
+    <button class="tab" data-tab="continue">Continue Watching</button>
+  </div>
+
+  <div id="searchView">
+    <form class="bar" id="searchForm">
+      <input type="text" id="q" placeholder="Search anime…" autocomplete="off" autofocus>
+      <select id="mode" title="Language">
+        <option value="sub">Sub</option>
+        <option value="dub">Dub</option>
+      </select>
+      <select id="player" title="Player">
+        <option value="default">Default player</option>
+        <option value="vlc">VLC</option>
+      </select>
+      <button type="submit">Search</button>
+    </form>
+    <div class="hint">Pick a series, choose an episode, then play. Playback opens in your chosen player.</div>
+
+    <div id="results" class="list"></div>
+    <div id="detail"></div>
+  </div>
+
+  <div id="continueView" style="display:none">
+    <div class="hint">Resumes the next episode from ani-cli's watch history.</div>
+    <div id="continueList"></div>
+  </div>
+
+  <footer id="footer">
+    <span id="verInfo">ani-gui</span>
+    <span id="health"></span>
+    <a href="/docs">Docs</a>
+    <a href="https://github.com/pystardust/ani-cli" target="_blank" rel="noreferrer">ani-cli</a>
+  </footer>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const state = { mode: "sub", player: "default", selected: null, ep: null };
+
+const coverImg = (src, cls="cover") =>
+  src ? `<img class="${cls}" src="${src}" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.visibility='hidden'">`
+      : `<span class="${cls}"></span>`;
+
+// tabs
+document.querySelectorAll(".tab").forEach(t => t.addEventListener("click", () => {
+  document.querySelectorAll(".tab").forEach(x => x.classList.remove("active"));
+  t.classList.add("active");
+  const tab = t.dataset.tab;
+  $("#searchView").style.display = tab === "search" ? "" : "none";
+  $("#continueView").style.display = tab === "continue" ? "" : "none";
+  if (tab === "continue") loadContinue();
+}));
+
+$("#mode").addEventListener("change", e => {
+  state.mode = e.target.value;
+  if ($("#q").value.trim()) runSearch();
+});
+
+$("#player").addEventListener("change", e => { state.player = e.target.value; });
+
+$("#bannerClose").addEventListener("click", () => $("#banner").classList.remove("show"));
+
+function showBanner(html, warn) {
+  $("#bannerText").innerHTML = html;
+  const b = $("#banner");
+  b.className = "banner show" + (warn ? " warn" : "");
+}
+
+async function loadVersion() {
+  try {
+    const v = await (await fetch("/api/version")).json();
+    const c = v.ani_cli;
+    $("#verInfo").textContent =
+      `ani-gui ${v.ani_gui} · ani-cli ${c.installed || "not found"}`;
+
+    if (!c.installed) {
+      $("#health").innerHTML = `<span class="dot bad"></span>ani-cli missing`;
+    } else if (!v.has_player) {
+      $("#health").innerHTML = `<span class="dot bad"></span>no player found`;
+    } else {
+      $("#health").innerHTML = `<span class="dot ok"></span>ready`;
+    }
+
+    // Show the most important message.  Errors first, then updates.
+    if (!c.installed) {
+      showBanner("<b>ani-cli isn't installed or isn't on PATH.</b> Install it from " +
+        `<a href="https://github.com/pystardust/ani-cli" target="_blank" rel="noreferrer">github.com/pystardust/ani-cli</a>, then reload.`, true);
+    } else if (!v.has_player) {
+      showBanner("<b>No video player found.</b> Install <code>mpv</code> or <code>iina</code> to watch.", true);
+    } else if (v.ani_gui_update) {
+      showBanner(`<b>ani-gui ${v.ani_gui} → ${v.ani_gui_latest} available.</b> ` +
+        `Update with <code>pipx upgrade ani-gui</code>`, false);
+    } else if (c.update_available) {
+      showBanner(`<b>ani-cli ${c.installed} → ${c.latest} available.</b> ` +
+        `Update with <code>ani-cli -U</code>` +
+        ` (or <code>brew upgrade ani-cli</code> if installed via Homebrew).`, false);
+    }
+  } catch (_) { /* footer just stays minimal */ }
+}
+loadVersion();
+
+$("#searchForm").addEventListener("submit", e => { e.preventDefault(); runSearch(); });
+
+async function runSearch() {
+  const q = $("#q").value.trim();
+  $("#detail").innerHTML = "";
+  state.selected = null; state.ep = null;
+  if (!q) { $("#results").innerHTML = ""; return; }
+  $("#results").innerHTML = `<div class="spin">Searching…</div>`;
+  try {
+    const r = await fetch(`/api/search?q=${encodeURIComponent(q)}&mode=${state.mode}`);
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+    renderResults(d.results);
+  } catch (err) {
+    $("#results").innerHTML = `<div class="empty">Error: ${err.message}</div>`;
+  }
+}
+
+function renderResults(results) {
+  if (!results.length) { $("#results").innerHTML = `<div class="empty">No results.</div>`; return; }
+  $("#results").innerHTML = "";
+  for (const a of results) {
+    const el = document.createElement("div");
+    el.className = "item";
+    const meta = state.mode === "dub" ? `${a.dub} dub` : `${a.sub} eps`;
+    el.innerHTML = `${coverImg(a.thumbnail)}<span class="name"></span><span class="meta">${meta}</span>`;
+    el.querySelector(".name").textContent = a.name;
+    el.addEventListener("click", () => selectShow(a, el));
+    $("#results").appendChild(el);
+  }
+}
+
+async function selectShow(a, el) {
+  document.querySelectorAll(".item").forEach(i => i.classList.remove("active"));
+  el.classList.add("active");
+  state.selected = a; state.ep = null;
+  $("#detail").innerHTML = `<div class="panel"><div class="spin">Loading episodes…</div></div>`;
+  try {
+    const r = await fetch(`/api/episodes?id=${encodeURIComponent(a.id)}&mode=${state.mode}`);
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+    renderDetail(a, d.episodes);
+  } catch (err) {
+    $("#detail").innerHTML = `<div class="panel"><div class="empty">Error: ${err.message}</div></div>`;
+  }
+}
+
+function renderDetail(a, episodes) {
+  const panel = document.createElement("div");
+  panel.className = "panel";
+  panel.innerHTML = `
+    <div style="display:flex; gap:14px; margin-bottom:14px;">
+      ${coverImg(a.thumbnail, "cover lg")}
+      <div style="min-width:0;">
+        <h2></h2>
+        <div class="sub" style="margin:4px 0 0;">${episodes.length} episode${episodes.length===1?"":"s"} · ${state.mode}</div>
+      </div>
+    </div>
+    <div class="eps"></div>
+    <div class="actions">
+      <select id="quality" title="Quality">
+        <option value="best">Best</option>
+        <option value="1080">1080p</option>
+        <option value="720">720p</option>
+        <option value="480">480p</option>
+        <option value="worst">Worst</option>
+      </select>
+      <button class="primary" id="playBtn" disabled>Play</button>
+      <button id="dlBtn" disabled>Download</button>
+    </div>
+    <div class="status" id="status"></div>`;
+  panel.querySelector("h2").textContent = a.name;
+  const epsBox = panel.querySelector(".eps");
+  if (!episodes.length) {
+    epsBox.innerHTML = `<span class="empty">No episodes available.</span>`;
+  }
+  for (const ep of episodes) {
+    const b = document.createElement("div");
+    b.className = "ep";
+    b.textContent = ep;
+    b.addEventListener("click", () => {
+      epsBox.querySelectorAll(".ep").forEach(x => x.classList.remove("sel"));
+      b.classList.add("sel");
+      state.ep = ep;
+      panel.querySelector("#playBtn").disabled = false;
+      panel.querySelector("#dlBtn").disabled = false;
+    });
+    epsBox.appendChild(b);
+  }
+  panel.querySelector("#playBtn").addEventListener("click", () => doPlay(panel, false));
+  panel.querySelector("#dlBtn").addEventListener("click", () => doPlay(panel, true));
+  $("#detail").innerHTML = "";
+  $("#detail").appendChild(panel);
+}
+
+async function doPlay(panel, download) {
+  const status = panel.querySelector("#status");
+  const btns = panel.querySelectorAll("button");
+  if (state.ep == null) {
+    status.className = "status err"; status.textContent = "Pick an episode first."; return;
+  }
+  setStatus(status, "work", download
+    ? `Asking ani-cli to download episode ${state.ep}…`
+    : `Resolving episode ${state.ep} via ani-cli (finding a working source)…`);
+  btns.forEach(b => b.disabled = true);
+  try {
+    const r = await fetch("/api/play", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        query: $("#q").value.trim(),
+        nth: state.selected.nth,
+        ep: state.ep,
+        quality: panel.querySelector("#quality").value,
+        mode: state.mode,
+        player: state.player,
+        download,
+      })});
+    const d = await r.json();
+    if (d.ok) setStatus(status, d.stage === "slow" ? "work" : "ok", d.message);
+    else setStatus(status, "err", d.error || "Playback failed.");
+  } catch (err) {
+    setStatus(status, "err", "Couldn't reach the server: " + err.message);
+  } finally {
+    btns.forEach(b => b.disabled = false);
+  }
+}
+
+function setStatus(el, kind, text) {
+  el.className = "status" + (kind === "err" ? " err" : kind === "ok" ? " ok" : " work");
+  el.textContent = (kind === "work" ? "⏳ " : kind === "ok" ? "▶ " : "⚠ ") + text;
+}
+
+async function loadContinue() {
+  const box = $("#continueList");
+  box.innerHTML = `<div class="spin">Loading history…</div>`;
+  try {
+    const r = await fetch(`/api/continue?mode=${state.mode}`);
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+    renderContinue(d.items);
+  } catch (err) {
+    box.innerHTML = `<div class="empty">Error: ${err.message}</div>`;
+  }
+}
+
+function renderContinue(items) {
+  const box = $("#continueList");
+  if (!items.length) {
+    box.innerHTML = `<div class="empty">No watch history yet. Play something from the Search tab.</div>`;
+    return;
+  }
+  box.innerHTML = `<div class="cards"></div>`;
+  const grid = box.querySelector(".cards");
+  for (const it of items) {
+    const card = document.createElement("div");
+    card.className = "card";
+    const caughtUp = !it.next_ep;
+    const prog = caughtUp
+      ? `Watched ep ${it.watched}${it.total ? ` · latest ${it.total}` : ""} · caught up`
+      : `Watched ep ${it.watched} · next ep ${it.next_ep}${it.total ? ` of ${it.total}` : ""}`;
+    card.innerHTML = `
+      ${coverImg(it.thumbnail, "cover lg")}
+      <div class="body">
+        <div class="title"></div>
+        <div class="prog">${prog}</div>
+        <button class="primary"${caughtUp ? " disabled" : ""}>Resume ep ${it.next_ep ?? it.watched}</button>
+        <div class="status"></div>
+      </div>`;
+    card.querySelector(".title").textContent = it.title;
+    const status = card.querySelector(".status");
+    card.querySelector("button").addEventListener("click", async (e) => {
+      const btn = e.target;
+      btn.disabled = true;
+      setStatus(status, "work", `Resolving ep ${it.next_ep} via ani-cli…`);
+      try {
+        const r = await fetch("/api/resume", {
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({ id: it.id, title: it.title, ep: it.next_ep,
+                                 mode: it.mode, player: state.player })});
+        const d = await r.json();
+        if (d.ok) setStatus(status, d.stage === "slow" ? "work" : "ok", d.message);
+        else setStatus(status, "err", d.error || "Playback failed.");
+      } catch (err) {
+        setStatus(status, "err", "Couldn't reach the server: " + err.message);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+    grid.appendChild(card);
+  }
+}
+</script>
+</body>
+</html>

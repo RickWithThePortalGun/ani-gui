@@ -1,0 +1,5 @@
+#!/bin/sh
+# Run ani-gui from a source checkout (no install needed).
+# For an installed copy, just run the `ani-gui` command on your PATH.
+DIR="$(cd "$(dirname "$0")" && pwd)"
+exec env PYTHONPATH="$DIR${PYTHONPATH:+:$PYTHONPATH}" python3 -m ani_gui "$@"

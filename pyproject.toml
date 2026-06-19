@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ani-gui"
+version = "0.2.0"
+description = "A small local web UI for ani-cli."
+readme = "README.md"
+requires-python = ">=3.6"
+license = { text = "GPL-3.0-or-later" }
+keywords = ["anime", "ani-cli", "gui", "mpv", "cli"]
+classifiers = [
+    "Environment :: Web Environment",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Topic :: Multimedia :: Video",
+]
+dependencies = []  # standard library only, on purpose
+
+[project.urls]
+Homepage = "https://github.com/rickwiththeportalgun/ani-gui"
+
+[project.scripts]
+ani-gui = "ani_gui.server:main"
+
+[tool.setuptools]
+packages = ["ani_gui"]
+
+[tool.setuptools.package-data]
+ani_gui = ["index.html"]
+
+[tool.ruff]
+line-length = 100
