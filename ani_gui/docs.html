@@ -4,7 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ani-gui — a local web UI for ani-cli</title>
-<meta name="description" content="A small, dependency-free local web UI for ani-cli. Search, browse episodes, resume from history, and play in mpv or iina.">
+<meta name="description" content="A small, dependency-free local web UI for ani-cli. Search with cover art, browse episodes, resume from history, get recommendations, and play in mpv, IINA, or VLC.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%231a1a1a'/%3E%3Cpath d='M12 9l12 7-12 7z' fill='%2300d4aa'/%3E%3C/svg%3E">
 <style>
   :root {
     --bg: #0f0f0f; --surface: #1a1a1a; --surface-2: #202020;
@@ -27,8 +28,10 @@
   nav a:hover { color: var(--text); }
 
   section { padding: 44px 0; border-bottom: 1px solid var(--border); }
+  section:last-of-type { border-bottom: none; }
   h1 { font-size: 30px; line-height: 1.2; margin: 0 0 12px; letter-spacing: -0.02em; }
   h2 { font-size: 18px; margin: 0 0 16px; }
+  h3 { font-size: 14px; margin: 0 0 4px; }
   .lead { color: var(--muted); font-size: 16px; max-width: 60ch; margin: 0 0 24px; }
 
   .row { display: flex; gap: 10px; flex-wrap: wrap; }
@@ -53,6 +56,66 @@
 
   .note { background: var(--surface); border: 1px solid var(--border-strong); border-radius: 8px; padding: 14px 16px; color: var(--muted); font-size: 14px; }
 
+  /* Static preview of the app UI — an accurate mock, not a fake chart. */
+  .preview {
+    border: 1px solid var(--border); border-radius: 8px; overflow: hidden;
+    background: var(--bg);
+  }
+  .preview .chrome {
+    display: flex; align-items: center; gap: 6px; padding: 9px 12px;
+    border-bottom: 1px solid var(--border); background: var(--surface);
+  }
+  .preview .chrome .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--border-strong); }
+  .preview .chrome .url {
+    margin-left: 10px; color: var(--faint); font-size: 12px; font-family: ui-monospace, monospace;
+  }
+  .preview .body { padding: 16px; }
+  .preview .pbar { display: flex; gap: 8px; margin-bottom: 10px; }
+  .preview .pinput {
+    flex: 1; background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+    padding: 7px 9px; font-size: 12.5px; color: var(--text);
+  }
+  .preview .ptabs { display: flex; gap: 14px; border-bottom: 1px solid var(--border); margin-bottom: 12px; font-size: 12px; color: var(--muted); }
+  .preview .ptabs span { padding: 6px 1px; }
+  .preview .ptabs .on { color: var(--text); border-bottom: 2px solid var(--accent); }
+  .preview .item {
+    display: flex; align-items: center; gap: 10px; padding: 8px 10px; margin-bottom: 6px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 6px; font-size: 13px;
+  }
+  .preview .item.sel { border-color: var(--accent); }
+  .preview .cov { width: 26px; height: 36px; border-radius: 4px; background: var(--surface-2); flex: none; }
+  .preview .item .name { flex: 1; }
+  .preview .item .meta { color: var(--faint); font-size: 11px; }
+  .preview .eps { display: flex; gap: 5px; margin: 8px 0 10px 0; padding-left: 36px; flex-wrap: wrap; }
+  .preview .ep { font-size: 11px; padding: 4px 7px; border-radius: 5px; background: var(--surface-2); border: 1px solid var(--border); color: var(--muted); }
+  .preview .ep.on { background: var(--accent); color: #06231d; border-color: var(--accent); }
+  .preview .pbtn {
+    display: inline-block; padding: 5px 10px; border-radius: 6px; font-size: 11px;
+    background: var(--accent); color: #06231d; font-weight: 600; margin-left: 36px;
+  }
+
+  .steps { list-style: none; margin: 0; padding: 0; counter-reset: step; }
+  .steps li {
+    position: relative; padding: 0 0 18px 38px; border-left: 1px solid var(--border); margin-left: 13px;
+  }
+  .steps li:last-child { border-color: transparent; padding-bottom: 0; }
+  .steps li::before {
+    counter-increment: step; content: counter(step);
+    position: absolute; left: -13px; top: 0; width: 26px; height: 26px;
+    border-radius: 50%; background: var(--surface); border: 1px solid var(--border-strong);
+    display: flex; align-items: center; justify-content: center; font-size: 12px; color: var(--text);
+  }
+  .steps b { display: block; margin-bottom: 2px; }
+  .steps span { color: var(--muted); font-size: 13.5px; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; margin-bottom: 16px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; }
+
+  .faq dt { font-weight: 600; margin-top: 16px; font-size: 14px; }
+  .faq dt:first-child { margin-top: 0; }
+  .faq dd { margin: 4px 0 0; color: var(--muted); font-size: 14px; }
+
   footer { padding: 28px 0 48px; color: var(--faint); font-size: 13px; display: flex; gap: 14px; flex-wrap: wrap; }
   footer a { color: var(--muted); text-decoration: none; }
 </style>
@@ -64,20 +127,43 @@
     <span class="name">ani-gui</span>
     <span class="spacer"></span>
     <a href="#install">Install</a>
-    <a href="#features">Features</a>
-    <a href="https://github.com/pystardust/ani-cli">ani-cli</a>
+    <a href="#how-it-works">How it works</a>
+    <a href="#faq">FAQ</a>
+    <a href="https://github.com/rickwiththeportalgun/ani-gui">GitHub</a>
   </nav>
 
   <section>
     <h1>A local web UI for ani-cli.</h1>
     <p class="lead">Search anime with cover art, browse episodes, resume from your
-      watch history, and play in mpv or iina — from your browser. Dependency-free,
-      one Python file. Playback is handled by ani-cli.</p>
+      watch history, get recommendations, and play in mpv, IINA, or VLC — from
+      your browser. Dependency-free, one Python file. Playback is handled by
+      ani-cli.</p>
     <div class="row">
       <a class="btn primary" href="#install">Install</a>
       <a class="btn" href="/">Launch app →</a>
       <a class="btn" href="https://github.com/pystardust/ani-cli">View ani-cli</a>
     </div>
+  </section>
+
+  <section>
+    <h2>What you'll see</h2>
+    <div class="preview">
+      <div class="chrome">
+        <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+        <span class="url">127.0.0.1:17390</span>
+      </div>
+      <div class="body">
+        <div class="pbar"><div class="pinput">frieren</div></div>
+        <div class="ptabs"><span class="on">Search</span><span>Continue Watching</span><span>For You</span><span>Downloads</span></div>
+        <div class="item sel"><span class="cov"></span><span class="name">Frieren: Beyond Journey's End</span><span class="meta">28 eps</span></div>
+        <div class="eps">
+          <span class="ep">1</span><span class="ep">2</span><span class="ep on">3</span><span class="ep">4</span><span class="ep">5</span><span class="ep">…</span>
+        </div>
+        <span class="pbtn">▶ Play episode 3</span>
+        <div class="item" style="margin-top:14px"><span class="cov"></span><span class="name">Dungeon Meshi</span><span class="meta">24 eps</span></div>
+      </div>
+    </div>
+    <p class="muted" style="margin-top:10px">A representative mock of the actual UI — calm, dense, no filler.</p>
   </section>
 
   <section id="install">
@@ -101,18 +187,41 @@ ani-gui</code></pre>
     <pre><code>git clone https://github.com/rickwiththeportalgun/ani-gui &amp;&amp; cd ani-gui
 ./ani-gui</code></pre>
 
+    <table>
+      <tr><th>Method</th><th>Best for</th><th>Auto-updates</th></tr>
+      <tr><td>pipx</td><td>most users, any OS</td><td><code>pipx upgrade ani-gui</code></td></tr>
+      <tr><td>Homebrew</td><td>macOS/Linux users already on brew</td><td><code>brew upgrade</code></td></tr>
+      <tr><td>pip</td><td>scripting / existing Python envs</td><td><code>pip install -U ani-gui</code></td></tr>
+      <tr><td>Source</td><td>contributing, hacking on it</td><td><code>git pull</code></td></tr>
+      <tr><td>macOS .app</td><td>no terminal</td><td>rebuild with <code>make-app.sh</code></td></tr>
+    </table>
+
     <p class="muted">Running <code>ani-gui</code> starts the app at
-      <code>http://127.0.0.1:17390</code>. Add <code>/docs</code> for this page.</p>
+      <code>http://127.0.0.1:17390</code>. Add <code>/docs</code> for this page.
+      Requires <a href="https://github.com/pystardust/ani-cli">ani-cli</a> and a
+      player (mpv, IINA, or VLC) already installed.</p>
+  </section>
+
+  <section id="how-it-works">
+    <h2>How it works</h2>
+    <ol class="steps">
+      <li><b>You search.</b> <span>ani-gui queries the same AllAnime API ani-cli uses, so results and episode lists line up exactly with what <code>ani-cli -S</code> would show.</span></li>
+      <li><b>Covers resolve lazily.</b> <span>Artwork comes straight from the API, proxied through <code>/api/cover</code>; if a show has none, ani-gui falls back to a Wikipedia lookup.</span></li>
+      <li><b>You pick an episode and hit Play.</b> <span>ani-gui runs <code>ani-cli -S &lt;n&gt; -e &lt;ep&gt; -q &lt;quality&gt;</code> for you — same flags you'd type by hand.</span></li>
+      <li><b>ani-cli resolves the stream.</b> <span>All extraction, provider fallbacks, and player launching stay inside ani-cli, so it keeps working as ani-cli updates.</span></li>
+      <li><b>You get a real status, not a guess.</b> <span>ani-gui reads ani-cli's own output to report what happened — playing, no source, quality fallback, or not yet released.</span></li>
+    </ol>
   </section>
 
   <section id="features">
     <h2>What it does</h2>
     <ul class="feat">
-      <li><b>Search with covers</b> — <span>results show artwork from AniList, MyAnimeList, or Wikipedia as a fallback.</span></li>
+      <li><b>Search with covers</b> — <span>results show artwork from the AllAnime API or Wikipedia as a fallback.</span></li>
       <li><b>Continue Watching</b> — <span>resumes the next episode straight from ani-cli's history.</span></li>
-      <li><b>Play or download</b> — <span>any episode opens in your chosen player (mpv, IINA, VLC).</span></li>
+      <li><b>For You</b> — <span>recommendations from AniList based on what you've actually watched.</span></li>
+      <li><b>Play or download</b> — <span>any episode opens in your chosen player (mpv, IINA, VLC), or downloads in the background.</span></li>
       <li><b>Quality &amp; language</b> — <span>best / 1080 / 720 / 480 / worst, sub or dub.</span></li>
-      <li><b>Update &amp; health check</b> — <span>flags ani-cli updates, a missing binary, or no player.</span></li>
+      <li><b>Update &amp; health check</b> — <span>flags ani-cli and ani-gui updates, a missing binary, or no player.</span></li>
       <li><b>Dependency-free</b> — <span>single Python file, standard library only.</span></li>
     </ul>
   </section>
@@ -121,12 +230,43 @@ ani-gui</code></pre>
     <h2>Runs on your machine</h2>
     <p class="note">ani-gui opens a local player on the computer running it, so it's
       meant to run on your own machine — not as a shared website. See
-      <a href="https://github.com/pystardust/ani-cli">the repo</a> and
-      <code>DISTRIBUTION.md</code> for details and packaging options.</p>
+      <a href="https://github.com/rickwiththeportalgun/ani-gui/blob/main/DISTRIBUTION.md">DISTRIBUTION.md</a>
+      for packaging options and what a truly hosted, in-browser-playback version
+      would require.</p>
+  </section>
+
+  <section id="faq">
+    <h2>FAQ</h2>
+    <dl class="faq">
+      <dt>Can I host this so people use it from a browser, like a website?</dt>
+      <dd>Not as-is. ani-gui launches a local player on the machine running the
+        server, so if you host it remotely the video opens on the <em>server</em>,
+        not the visitor's screen. It's designed as a localhost tool — each person
+        runs it on their own computer.</dd>
+
+      <dt>Does it work on Windows and Linux, or just macOS?</dt>
+      <dd>It's plain Python standard library, so it runs anywhere Python 3.6+ and
+        ani-cli do. The native folder picker and player detection adapt to each OS.</dd>
+
+      <dt>What if ani-cli isn't installed?</dt>
+      <dd>ani-gui still starts, but shows a banner telling you to install it
+        (with a link) — search and browsing keep working, only playback needs it.</dd>
+
+      <dt>Is this affiliated with ani-cli?</dt>
+      <dd>No. ani-gui is an independent front-end. It streams nothing itself —
+        every stream is resolved and played by your installed ani-cli.</dd>
+
+      <dt>Where do downloads go?</dt>
+      <dd>Wherever you set in the Downloads tab (or <code>ANI_CLI_DOWNLOAD_DIR</code>
+        if set), defaulting to the current directory.</dd>
+    </dl>
   </section>
 
   <footer>
     <span>GPL-3.0</span>
+    <a href="https://github.com/rickwiththeportalgun/ani-gui">GitHub</a>
+    <a href="https://github.com/rickwiththeportalgun/ani-gui/blob/main/CHANGELOG.md">Changelog</a>
+    <a href="https://github.com/rickwiththeportalgun/ani-gui/issues">Issues</a>
     <a href="https://github.com/pystardust/ani-cli">ani-cli</a>
     <span>Not affiliated with ani-cli. Streams nothing itself.</span>
   </footer>

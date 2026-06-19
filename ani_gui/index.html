@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ani-gui</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%231a1a1a'/%3E%3Cpath d='M12 9l12 7-12 7z' fill='%2300d4aa'/%3E%3C/svg%3E">
 <style>
   :root {
     --bg: #0f0f0f;
@@ -143,6 +144,21 @@
   .dot.ok { background: var(--accent); }
   .dot.bad { background: #c46; }
 
+  .prog-bar { height: 3px; background: var(--border); border-radius: 2px; margin-top: 5px; overflow: hidden; }
+  .prog-bar .fill {
+    height: 100%; width: 40%; background: var(--accent); border-radius: 2px;
+    animation: prog-slide 1.4s ease-in-out infinite;
+  }
+  .prog-bar .fill.det {
+    animation: none; transform: none; transition: width .8s linear;
+  }
+  @keyframes prog-slide {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(250%); }
+  }
+  .meta.failed { color: #ff7a7a; }
+  .dl-note { color: #ff7a7a; font-size: 11px; margin-top: 4px; }
+
   @media (max-width: 640px) {
     .wrap { padding: 16px 12px 48px; }
 
@@ -236,7 +252,6 @@
     <div class="hint">Episodes you've asked ani-gui to download via ani-cli.</div>
     <div class="bar" style="margin-bottom:14px">
       <input type="text" id="dlDir" placeholder="Download directory (default: current dir)" autocomplete="off">
-      <input type="file" id="dlDirPicker" webkitdirectory style="display:none">
       <button id="dlDirBrowse">Browse</button>
       <button id="dlDirSave">Save</button>
     </div>
@@ -271,7 +286,7 @@ document.querySelectorAll(".tab").forEach(t => t.addEventListener("click", () =>
   if (tab === "continue") loadContinue();
   if (tab === "for-you") loadForYou();
   if (tab === "downloads") loadDownloads();
-  else { if (_downloadsPoll) { clearInterval(_downloadsPoll); _downloadsPoll = null; } }
+  else { if (_downloadsPoll) { clearTimeout(_downloadsPoll); _downloadsPoll = null; } }
 }));
 
 $("#mode").addEventListener("change", e => {
@@ -507,6 +522,7 @@ async function doPlay(els, download) {
         mode: state.mode,
         player: state.player,
         download,
+        thumbnail: download ? (state.selected.thumbnail || "") : undefined,
       })});
     const d = await r.json();
     if (d.ok) {
@@ -528,7 +544,7 @@ async function doPlay(els, download) {
             const el = document.createElement("div");
             el.className = "item";
             el.style.opacity = "1";
-            el.innerHTML = `<span class="cover"></span><span class="name">${escHtml(title)} — ep ${escHtml(String(ep))}</span><span class="meta">⏳ ${escHtml(state.mode)} · ${escHtml(qual)} · ${escHtml(now)}</span>`;
+            el.innerHTML = `${coverImg(state.selected.thumbnail)}<span class="dl-info" style="flex:1;min-width:0"><span class="name" style="display:block">${escHtml(title)} — ep ${escHtml(String(ep))}</span><span class="meta">⏳ ${escHtml(state.mode)} · ${escHtml(qual)} · ${escHtml(now)}</span></span>`;
             listBox.insertBefore(el, listBox.firstChild);
           }
         }
@@ -567,6 +583,7 @@ async function downloadAll(els, episodes) {
           mode: state.mode,
           player: state.player,
           download: true,
+          thumbnail: state.selected.thumbnail || "",
         })});
       done++;
     } catch (_) {
@@ -722,6 +739,43 @@ function escHtml(s) {
 let _downloadsDirty = false;
 let _downloadsPoll = null;
 
+// Live progress detail shown next to a downloading item: "45% · 2.3MiB/s · ETA 0:42",
+// falling back to whatever the downloader gives us (bytes, or nothing).
+function dlProgressText(di) {
+  if (di.status !== "downloading") return "";
+  const bits = [];
+  if (typeof di.percent === "number") bits.push(di.percent.toFixed(0) + "%");
+  if (di.speed) bits.push(di.speed);
+  if (di.eta) bits.push("ETA " + di.eta);
+  if (!bits.length && di.downloaded) bits.push(di.downloaded);
+  return bits.length ? " · " + bits.join(" · ") : "";
+}
+
+// Apply a determinate width when we have a real percent, else leave the bar
+// indeterminate (animated) for the "still resolving / no percent" phase.
+function applyProgressBar(item, di) {
+  const info = item.querySelector(".dl-info");
+  let bar = item.querySelector(".prog-bar");
+  if (di.status === "downloading") {
+    if (!bar) {
+      bar = document.createElement("div");
+      bar.className = "prog-bar";
+      bar.innerHTML = '<div class="fill"></div>';
+      info.appendChild(bar);
+    }
+    const fill = bar.querySelector(".fill");
+    if (typeof di.percent === "number") {
+      fill.classList.add("det");
+      fill.style.width = Math.max(2, Math.min(100, di.percent)) + "%";
+    } else {
+      fill.classList.remove("det");
+      fill.style.width = "";
+    }
+  } else if (bar) {
+    bar.remove();
+  }
+}
+
 async function loadDownloads() {
   // Load settings for the download-directory input.
   try {
@@ -739,85 +793,85 @@ async function loadDownloads() {
     if (d.error) throw new Error(d.error);
     renderDownloads(d.items);
     _downloadsDirty = false;
-    // Poll faster while downloads are active, slower otherwise.
-    if (_downloadsPoll) clearInterval(_downloadsPoll);
-    const hasActive = d.items.some(i => i.status === "downloading");
-    _downloadsPoll = setInterval(refreshDownloadStatus, hasActive ? 1500 : 5000);
+    // Poll fast while a download is active (for smooth realtime progress),
+    // slow when everything's idle. The cadence re-evaluates every tick.
+    scheduleDownloadsPoll(d.items.some(i => i.status === "downloading"));
   } catch (err) {
     box.innerHTML = `<div class="empty">Couldn't load download history.</div>`;
   }
 }
 
+function scheduleDownloadsPoll(active) {
+  if (_downloadsPoll) clearTimeout(_downloadsPoll);
+  _downloadsPoll = setTimeout(refreshDownloadStatus, active ? 1000 : 5000);
+}
+
 async function refreshDownloadStatus() {
   if ($("#downloadsView").style.display === "none") {
-    if (_downloadsPoll) { clearInterval(_downloadsPoll); _downloadsPoll = null; }
+    if (_downloadsPoll) { clearTimeout(_downloadsPoll); _downloadsPoll = null; }
     return;
   }
+  let active = false;
   try {
     const r = await fetch("/api/downloads");
     const d = await r.json();
-    if (d.error) return;
+    if (d.error) { scheduleDownloadsPoll(false); return; }
+    active = d.items.some(i => i.status === "downloading");
     const items = document.querySelectorAll("#downloadsList .item");
+    // If a new download was queued (or the count otherwise drifted), the
+    // incremental index update can't add rows — do a full re-render instead.
+    if (_downloadsDirty || items.length !== d.items.length) {
+      renderDownloads(d.items);
+      _downloadsDirty = false;
+      scheduleDownloadsPoll(active);
+      return;
+    }
     for (let i = 0; i < Math.min(items.length, d.items.length); i++) {
       const di = d.items[i];
       const meta = items[i].querySelector(".meta");
-      const icon = di.status === "downloading" ? "⏳" : di.status === "done" ? "✓" : "";
-      const progress = di.progress_bytes ? ` · ${(di.progress_bytes / 1048576).toFixed(1)} MB` : "";
-      // Rebuild meta text.
-      const parts = meta.textContent.replace(/^[⏳✓]\s*/, "").replace(/ · [\d.]+ MB/, "").split(" · ");
-      meta.textContent = icon ? `${icon} ${parts.join(" · ")}${progress}` : parts.join(" · ");
-      items[i].style.opacity = di.status === "done" ? "0.6" : "1";
-      // Update progress bar.
-      let bar = items[i].querySelector(".prog-bar");
-      if (di.status === "downloading" && di.progress_bytes) {
-        if (!bar) {
-          bar = document.createElement("div");
-          bar.className = "prog-bar";
-          bar.style.cssText = "height:3px;background:var(--border);border-radius:2px;margin-top:4px;overflow:hidden";
-          bar.innerHTML = '<div style="height:100%;background:var(--accent);border-radius:2px;transition:width 1s"></div>';
-          items[i].querySelector("span").appendChild(bar);
+      const icon = di.status === "downloading" ? "⏳" : di.status === "done" ? "✓" : di.status === "failed" ? "✗" : "";
+      // Rebuild the meta line cleanly from the record (no string surgery).
+      meta.textContent = `${icon} ${di.mode} · ${di.quality} · ${di.time}${dlProgressText(di)}`;
+      meta.classList.toggle("failed", di.status === "failed");
+      items[i].style.opacity = di.status === "done" ? "0.6" : di.status === "failed" ? "0.8" : "1";
+      const info = items[i].querySelector(".dl-info");
+      applyProgressBar(items[i], di);
+      // Failed downloads get an explanatory note instead of silently
+      // looking the same as a finished one.
+      let note = items[i].querySelector(".dl-note");
+      if (di.status === "failed" && !note) {
+        note = document.createElement("div");
+        note.className = "dl-note";
+        note.textContent = "No file found — this download may have failed. Try again from Search.";
+        info.appendChild(note);
+      } else if (di.status !== "failed" && note) {
+        note.remove();
+      }
+      // Files matched after the initial render (e.g. the download finished
+      // mid-poll) should get Play buttons too, not just on first load.
+      const files = di.files || [];
+      let filesBox = items[i].querySelector(".dl-files");
+      const knownPaths = filesBox
+        ? [...filesBox.querySelectorAll(".play-file-btn")].map(b => b.dataset.path)
+        : [];
+      if (files.length && files.join("|") !== knownPaths.join("|")) {
+        if (!filesBox) {
+          filesBox = document.createElement("div");
+          filesBox.className = "dl-files";
+          info.appendChild(filesBox);
         }
-        bar.firstChild.style.width = Math.min(100, (di.progress_bytes / 50000000) * 100) + "%";
-      } else if (bar && di.status === "done") {
-        bar.firstChild.style.width = "100%";
+        filesBox.innerHTML = files.map(f =>
+          `<button class="play-file-btn" data-path="${escHtml(f)}" style="font-size:11px;padding:4px 8px;margin-right:4px;margin-top:6px">▶ ${escHtml(f.split('/').pop().slice(0,30))}</button>`
+        ).join("");
+        wirePlayFileButtons(filesBox);
       }
     }
   } catch (_) {}
+  scheduleDownloadsPoll(active);
 }
 
-function renderDownloads(items) {
-  const box = $("#downloadsList");
-  if (!items.length) {
-    box.innerHTML = `<div class="empty">Nothing downloaded yet. Search for an anime, pick an episode, and click Download.</div>`;
-    return;
-  }
-  box.innerHTML = `<div class="list"></div>`;
-  const list = box.querySelector(".list");
-  for (const d of items) {
-    const el = document.createElement("div");
-    el.className = "item";
-    const files = d.files || [];
-    const statusIcon = d.status === "downloading" ? "⏳" : d.status === "done" ? "✓" : "";
-    const progress = d.progress_bytes ? ` · ${(d.progress_bytes / 1048576).toFixed(1)} MB` : "";
-    const playBtns = (files || []).map(f =>
-      `<button class="play-file-btn" data-path="${escHtml(f)}" style="font-size:11px;padding:4px 8px;margin-left:4px">▶ ${escHtml(f.split('/').pop().slice(0,30))}</button>`
-    ).join("");
-    const bar = d.status === "downloading" && d.progress_bytes
-      ? `<div style="height:3px;background:var(--border);border-radius:2px;margin-top:4px;overflow:hidden"><div style="height:100%;width:${Math.min(100, (d.progress_bytes / 50000000) * 100)}%;background:var(--accent);border-radius:2px;transition:width 1s"></div></div>`
-      : "";
-    el.innerHTML = `
-      <span class="cover"></span>
-      <span style="flex:1;min-width:0">
-        <span class="name" style="display:block">${escHtml(d.title)} — ep ${escHtml(String(d.ep))}</span>
-        <span class="meta">${statusIcon} ${escHtml(d.mode)} · ${escHtml(d.quality)} · ${escHtml(d.time)}${progress}${playBtns}</span>
-        ${bar}
-      </span>`;
-    el.title = files.length ? `Files: ${files.join(', ')}` : `Saved to: ${d.dir}`;
-    el.style.opacity = d.status === "done" ? "0.6" : "1";
-    list.appendChild(el);
-  }
-  // Wire play-file buttons.
-  list.querySelectorAll(".play-file-btn").forEach(btn => {
+function wirePlayFileButtons(scope) {
+  scope.querySelectorAll(".play-file-btn").forEach(btn => {
     btn.addEventListener("click", async (e) => {
       e.stopPropagation();
       const path = btn.dataset.path;
@@ -836,6 +890,51 @@ function renderDownloads(items) {
       setTimeout(() => { btn.disabled = false; }, 2000);
     });
   });
+}
+
+function renderDownloads(items) {
+  const box = $("#downloadsList");
+  if (!items.length) {
+    box.innerHTML = `<div class="empty">Nothing downloaded yet. Search for an anime, pick an episode, and click Download.</div>`;
+    return;
+  }
+  box.innerHTML = `<div class="list"></div>`;
+  const list = box.querySelector(".list");
+  for (const d of items) {
+    const el = document.createElement("div");
+    el.className = "item";
+    const files = d.files || [];
+    const statusIcon = d.status === "downloading" ? "⏳" : d.status === "done" ? "✓" : d.status === "failed" ? "✗" : "";
+    const playBtns = (files || []).map(f =>
+      `<button class="play-file-btn" data-path="${escHtml(f)}" style="font-size:11px;padding:4px 8px;margin-right:4px;margin-top:6px">▶ ${escHtml(f.split('/').pop().slice(0,30))}</button>`
+    ).join("");
+    // The bar is determinate when we have a real percent, else indeterminate
+    // (covers the "still resolving the stream" phase before a percent exists).
+    const pct = (d.status === "downloading" && typeof d.percent === "number")
+      ? Math.max(2, Math.min(100, d.percent)) : null;
+    const bar = d.status === "downloading"
+      ? `<div class="prog-bar"><div class="fill${pct !== null ? " det" : ""}"${pct !== null ? ` style="width:${pct}%"` : ""}></div></div>`
+      : "";
+    const note = d.status === "failed"
+      ? `<div class="dl-note">No file found — this download may have failed. Try again from Search.</div>`
+      : "";
+    // Play buttons and the progress bar live outside .meta on purpose —
+    // refreshDownloadStatus() rewrites .meta's text on every poll, which
+    // would otherwise wipe out any buttons placed inside it.
+    el.innerHTML = `
+      ${coverImg(d.thumbnail)}
+      <span class="dl-info" style="flex:1;min-width:0">
+        <span class="name" style="display:block">${escHtml(d.title)} — ep ${escHtml(String(d.ep))}</span>
+        <span class="meta${d.status === "failed" ? " failed" : ""}">${statusIcon} ${escHtml(d.mode)} · ${escHtml(d.quality)} · ${escHtml(d.time)}${dlProgressText(d)}</span>
+        ${bar}
+        ${note}
+        ${playBtns ? `<div class="dl-files">${playBtns}</div>` : ""}
+      </span>`;
+    el.title = files.length ? `Files: ${files.join(', ')}` : `Saved to: ${d.dir}`;
+    el.style.opacity = d.status === "done" ? "0.6" : d.status === "failed" ? "0.8" : "1";
+    list.appendChild(el);
+  }
+  wirePlayFileButtons(list);
   box.insertAdjacentHTML("beforeend",
     `<div class="hint" style="margin-top:12px">Files saved to <code>${escHtml(items[0].dir)}</code> (or <code>$ANI_CLI_DOWNLOAD_DIR</code> if set).</div>`);
 }

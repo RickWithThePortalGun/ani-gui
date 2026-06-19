@@ -22,6 +22,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 import urllib.request
 import urllib.parse
 import webbrowser
@@ -29,7 +30,7 @@ from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-VERSION = "0.3.3"
+VERSION = "0.4.0"
 ANI_CLI_RAW = "https://raw.githubusercontent.com/pystardust/ani-cli/master/ani-cli"
 
 # --- AllAnime API (mirrors the constants inside the ani-cli script) ----------
@@ -82,6 +83,110 @@ SETTINGS_FILE = os.path.join(
 
 _downloads_lock = threading.Lock()
 _settings_lock = threading.Lock()
+
+# Live progress for downloads started in *this* server session, keyed by the
+# download id we hand back to the browser. Populated by a reader thread that
+# parses the downloader's terminal output (see _watch_download). Lost on
+# restart — that's fine, the pid/file heuristic in _downloads_with_status()
+# takes over for anything we don't have live state for.
+_active_downloads = {}
+_active_lock = threading.Lock()
+
+
+def _set_progress(dl_id, data):
+    with _active_lock:
+        _active_downloads.setdefault(dl_id, {}).update(data)
+
+
+def _finish_progress(dl_id, returncode):
+    with _active_lock:
+        cur = _active_downloads.setdefault(dl_id, {})
+        cur["downloading"] = False
+        cur["returncode"] = returncode
+        cur["done_ts"] = time.time()
+        # Keep the registry from growing without bound over a long session.
+        if len(_active_downloads) > 80:
+            finished = sorted(
+                ((k, v.get("done_ts", 0)) for k, v in _active_downloads.items()
+                 if not v.get("downloading", True)),
+                key=lambda kv: kv[1])
+            for k, _ in finished[:len(_active_downloads) - 80]:
+                _active_downloads.pop(k, None)
+
+
+def _parse_progress_line(line):
+    """Pull percent / speed / ETA out of one downloader output line.
+
+    Handles the three downloaders ani-cli uses — yt-dlp and aria2c report a
+    real percentage; ffmpeg (HLS remux) only reports bytes, so we surface that
+    and leave the bar indeterminate. Returns None for non-progress lines."""
+    line = line.strip()
+    if not line:
+        return None
+
+    # yt-dlp: "[download]  22.5% of ~123.45MiB at  2.34MiB/s ETA 00:42"
+    m = re.search(r"\[download\]\s+([\d.]+)%\s+of\s+~?\s*([\d.]+\s*[KMGT]i?B)", line)
+    if m:
+        out = {"percent": float(m.group(1)), "total": m.group(2).replace(" ", "")}
+        s = re.search(r"at\s+([\d.]+\s*[KMGT]i?B/s)", line)
+        if s:
+            out["speed"] = s.group(1).replace(" ", "")
+        e = re.search(r"ETA\s+([\d:]+)", line)
+        if e:
+            out["eta"] = e.group(1)
+        return out
+
+    # aria2c: "[#abcd 1.2MiB/5.4MiB(22%) CN:16 DL:2.1MiB ETA:2s]"
+    m = re.search(r"\((\d+)%\)", line)
+    if m and ("DL:" in line or "ETA:" in line):
+        out = {"percent": float(m.group(1))}
+        b = re.search(r"([\d.]+[KMGT]i?B)/([\d.]+[KMGT]i?B)", line)
+        if b:
+            out["downloaded"], out["total"] = b.group(1), b.group(2)
+        s = re.search(r"DL:([\d.]+[KMGT]i?B)", line)
+        if s:
+            out["speed"] = s.group(1) + "/s"
+        e = re.search(r"ETA:(\w+)", line)
+        if e:
+            out["eta"] = e.group(1)
+        return out
+
+    # ffmpeg: "... size=   10240kB time=00:01:23.00 ... speed=1.2x"
+    m = re.search(r"size=\s*([\d.]+\s*[kKMGT]?B)\s", line)
+    if m and "time=" in line:
+        return {"downloaded": m.group(1).replace(" ", "")}
+
+    return None
+
+
+def _watch_download(dl_id, master_fd, proc):
+    """Read the download's terminal output, parse progress, mark completion."""
+    _set_progress(dl_id, {"downloading": True, "percent": None})
+    buf = b""
+    try:
+        while True:
+            try:
+                chunk = os.read(master_fd, 4096)
+            except OSError:
+                break  # slave closed (EIO on macOS) → download finished
+            if not chunk:
+                break
+            buf += chunk
+            # Progress is updated in place with carriage returns; treat \r and
+            # \n alike and parse every complete line, keeping the partial tail.
+            text = buf.replace(b"\r", b"\n").decode("utf-8", "replace")
+            parts = text.split("\n")
+            buf = parts[-1].encode("utf-8", "replace")
+            for ln in parts[:-1]:
+                p = _parse_progress_line(ln)
+                if p:
+                    _set_progress(dl_id, p)
+    finally:
+        try:
+            os.close(master_fd)
+        except OSError:
+            pass
+        _finish_progress(dl_id, proc.wait())
 
 
 def _read_settings():
@@ -264,17 +369,19 @@ def _write_downloads(items):
             json.dump(items, f, indent=2)
 
 
-def _record_download(title, ep, quality, mode, pid=None):
+def _record_download(title, ep, quality, mode, pid=None, thumbnail="", dl_id=None):
     """Add a download entry and persist immediately."""
     items = _read_downloads()
     # Remove any older entry for the same title+ep (duplicate).
     items = [d for d in items
              if not (d.get("title") == title and d.get("ep") == ep)]
     items.insert(0, {
+        "id": dl_id,
         "title": title,
         "ep": ep,
         "quality": quality,
         "mode": mode,
+        "thumbnail": thumbnail,
         "time": time.strftime("%Y-%m-%d %H:%M"),
         "dir": _download_dir(),
         "pid": pid,
@@ -283,9 +390,40 @@ def _record_download(title, ep, quality, mode, pid=None):
     _write_downloads(items[:50])
 
 
-def _scan_download_files():
-    """List video files in the download directory."""
-    ddir = _download_dir()
+_STOPWORDS = {"the", "a", "an", "of", "in", "on", "is", "to", "and", "or", "for"}
+
+
+def _title_tokens(title):
+    """Significant words from a title, for matching against filenames."""
+    words = re.findall(r"[a-z0-9]+", title.lower())
+    return [w for w in words if len(w) > 2 and w not in _STOPWORDS]
+
+
+def _match_download_files(entry, files):
+    """Match a download record to files already on disk.
+
+    Precise on purpose: ani-cli names downloads "<Title> Episode <N>.<ext>",
+    so we require an exact "Episode <N>" token (not just the digits anywhere
+    in the name) plus every significant word from the title. A bare
+    substring match on the episode number or a single common word matched
+    unrelated downloads sitting in the same folder."""
+    ep = str(entry.get("ep", ""))
+    ep_re = re.compile(rf"episode\s*0*{re.escape(ep)}(?!\d)", re.I)
+    tokens = _title_tokens(entry.get("title", ""))
+    out = []
+    for f in files:
+        fn = f["name"].lower()
+        if not ep_re.search(fn):
+            continue
+        if tokens and not all(t in fn for t in tokens):
+            continue
+        out.append(f)
+    return out
+
+
+def _scan_download_files(ddir=None):
+    """List video files in *ddir* (defaults to the configured download dir)."""
+    ddir = ddir or _download_dir()
     exts = {".mp4", ".mkv", ".webm", ".avi", ".mov", ".flv", ".m4v"}
     files = []
     try:
@@ -310,28 +448,59 @@ def _scan_download_files():
 
 
 def _downloads_with_status():
-    """Return the download log with live status and matched files.
+    """Return the download log with live status, progress, and matched files.
 
-    Uses three signals to determine whether a download is still active:
-    1. PID still alive → downloading
-    2. Started less than 3 minutes ago → downloading (assume still in progress)
-    3. Otherwise → done
+    Two layers of truth, in order of preference:
+    1. Live progress from this session's reader thread (real percent/speed/ETA
+       and the downloader's own exit code) — accurate to the second.
+    2. A pid + file-presence fallback for entries we have no live state for
+       (e.g. started by a previous server run). ani-cli's downloader runs in
+       the foreground, so its recorded pid stays alive for the whole download;
+       once it's gone and no file showed up, the download genuinely failed.
     """
     items = _read_downloads()
-    ddir_files = _scan_download_files()
     now = time.time()
+    files_by_dir = {}  # cache directory listings — several entries share a dir
 
     for d in items:
+        # Match against files in the directory this download actually used —
+        # not whatever directory happens to be configured right now.
+        ddir = d.get("dir") or _download_dir()
+        if ddir not in files_by_dir:
+            files_by_dir[ddir] = _scan_download_files(ddir)
+        matched = _match_download_files(d, files_by_dir[ddir])
+        d["files"] = [f["path"] for f in matched]
+
+        with _active_lock:
+            live = dict(_active_downloads.get(d.get("id") or "", {}))
+
+        if live.get("downloading"):
+            d["status"] = "downloading"
+            if live.get("percent") is not None:
+                d["percent"] = live["percent"]
+            for k in ("speed", "eta", "downloaded", "total"):
+                if live.get(k):
+                    d[k] = live[k]
+            d["progress_bytes"] = sum(f["size"] for f in matched) if matched else 0
+            continue
+
+        if "returncode" in live:
+            # The downloader finished and told us how it went — trust it.
+            d["status"] = "done" if live["returncode"] == 0 else "failed"
+            continue
+
+        # No live state — fall back to pid liveness + file presence.
+        # NB: signal 0 is a liveness probe only on POSIX. On Windows
+        # os.kill() *terminates* the target for any signal, so we skip the
+        # probe there and lean on the age/file heuristic instead.
         pid = d.get("pid")
         alive = False
-        if pid is not None:
+        if pid is not None and os.name == "posix":
             try:
                 os.kill(pid, 0)
                 alive = True
             except (OSError, ProcessLookupError):
                 pass
-
-        # Parse the recorded time to estimate age.
         try:
             t = time.mktime(time.strptime(d.get("time", ""), "%Y-%m-%d %H:%M"))
             age = now - t
@@ -340,38 +509,14 @@ def _downloads_with_status():
 
         if alive:
             d["status"] = "downloading"
-        elif d.get("status") == "downloading" and age < 180:
+            d["progress_bytes"] = sum(f["size"] for f in matched) if matched else 0
+        elif age < 20:
+            # Just queued / just exited — don't flash "failed" prematurely.
             d["status"] = "downloading"
-        elif age < 180:
-            d["status"] = "downloading"
-        elif pid is not None:
+        elif matched:
             d["status"] = "done"
         else:
-            d["status"] = "done"
-
-        # Match download entries to actual files in the directory.
-        # Fuzzy: the file name should contain the title and episode number.
-        title_lower = d.get("title", "").lower()
-        ep = str(d.get("ep", ""))
-        matched = []
-        total_bytes = 0
-        for f in ddir_files:
-            fn = f["name"].lower()
-            if ep in fn and any(word in fn for word in title_lower.split()
-                                if len(word) > 2):
-                matched.append(f["path"])
-                total_bytes += f["size"]
-        d["files"] = matched
-        # Report download progress if the download is still active and
-        # we found a partial file that's still growing.
-        if d["status"] == "downloading" and matched:
-            # Check if the file is still being written (modified recently).
-            newest = max(f["mtime"] for f in ddir_files
-                         if f["path"] in matched)
-            if now - newest < 10:
-                d["progress_bytes"] = total_bytes
-            else:
-                d["progress_bytes"] = total_bytes
+            d["status"] = "failed"
 
     return items
 
@@ -552,7 +697,7 @@ def _player_label(player):
     return "your player"
 
 
-def play(query, nth, ep, quality, mode, download=False, player="default"):
+def play(query, nth, ep, quality, mode, download=False, player="default", thumbnail=""):
     """Run ani-cli for one episode.
 
     For playback we capture ani-cli's output and wait briefly so we can report
@@ -575,8 +720,12 @@ def play(query, nth, ep, quality, mode, download=False, player="default"):
 
     env = dict(os.environ)
     # Make sure ani-cli can find the players/curl even if the server was
-    # started from a minimal environment.
-    env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:" + env.get("PATH", "")
+    # started from a minimal environment. These are the common POSIX brew
+    # locations; on Windows ani-cli runs under a shell that has its own PATH,
+    # so we leave it untouched there.
+    if os.name == "posix":
+        extra = os.pathsep.join(["/opt/homebrew/bin", "/usr/local/bin"])
+        env["PATH"] = extra + os.pathsep + env.get("PATH", "")
     # Use the configured download directory for ani-cli.
     ddir = _download_dir()
     if ddir:
@@ -585,11 +734,39 @@ def play(query, nth, ep, quality, mode, download=False, player="default"):
     plabel = "the downloader" if download else _player_label(player)
 
     if download:
-        proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL,
-                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                env=env, start_new_session=True)
-        _record_download(query, ep, quality, mode, pid=proc.pid)
-        return {"ok": True, "stage": "download",
+        dl_id = uuid.uuid4().hex
+        # Attach the download to a pseudo-terminal so aria2c / yt-dlp / ffmpeg
+        # think they're on a TTY and emit their real progress output, which a
+        # reader thread parses for live percent/speed/ETA. Falls back to a
+        # plain detached process where pty isn't available (e.g. Windows).
+        if hasattr(os, "openpty") and os.name == "posix":
+            master, slave = os.openpty()
+            try:
+                import fcntl
+                import struct
+                import termios
+                # Give the pty a sane size; a 0×0 terminal makes some tools
+                # suppress or mangle their progress line.
+                fcntl.ioctl(slave, termios.TIOCSWINSZ,
+                            struct.pack("HHHH", 24, 100, 0, 0))
+            except Exception:
+                pass
+            proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL,
+                                    stdout=slave, stderr=slave,
+                                    env=env, start_new_session=True)
+            os.close(slave)
+            _record_download(query, ep, quality, mode, pid=proc.pid,
+                             thumbnail=thumbnail, dl_id=dl_id)
+            threading.Thread(target=_watch_download,
+                             args=(dl_id, master, proc), daemon=True).start()
+        else:
+            proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL,
+                                    stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL,
+                                    env=env, start_new_session=True)
+            _record_download(query, ep, quality, mode, pid=proc.pid,
+                             thumbnail=thumbnail, dl_id=dl_id)
+        return {"ok": True, "stage": "download", "id": dl_id,
                 "message": f"Downloading episode {ep} in the background "
                            "(saved to ani-cli's download dir)."}
 
@@ -902,7 +1079,8 @@ class Handler(BaseHTTPRequestHandler):
                     quality=body.get("quality", "best"),
                     mode=body.get("mode", "sub"),
                     player=body.get("player", "default"),
-                    download=bool(body.get("download")))
+                    download=bool(body.get("download")),
+                    thumbnail=body.get("thumbnail", ""))
                 return self._send(200 if res.get("ok") else 502, res)
             if u.path == "/api/resume":
                 # Resolve the show's search position by id, then play.
@@ -940,15 +1118,18 @@ class Handler(BaseHTTPRequestHandler):
                     cmd = ["mpv", path]
                 elif shutil.which("vlc"):
                     cmd = ["vlc", path]
+                elif os.name == "nt":
+                    # No player binary found — hand off to the OS default.
+                    # `start` is a cmd builtin, not an executable, so Popen
+                    # can't run it directly; os.startfile is the right API.
+                    os.startfile(path)  # noqa: B606  (Windows-only)
+                    return self._send(200, {"ok": True,
+                                            "message": f"Opening {os.path.basename(path)}"})
                 else:
-                    # Last resort: let the OS pick.
+                    # Last resort on macOS / Linux: let the OS pick.
                     import platform
-                    if platform.system() == "Darwin":
-                        cmd = ["open", path]
-                    elif platform.system() == "Windows":
-                        cmd = ["start", "", path]
-                    else:
-                        cmd = ["xdg-open", path]
+                    cmd = ["open", path] if platform.system() == "Darwin" \
+                        else ["xdg-open", path]
                 subprocess.Popen(cmd, stdin=subprocess.DEVNULL,
                                  stdout=subprocess.DEVNULL,
                                  stderr=subprocess.DEVNULL,
