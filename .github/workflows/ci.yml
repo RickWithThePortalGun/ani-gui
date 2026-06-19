@@ -16,7 +16,7 @@ jobs:
           python-version: "3.x"
 
       - name: Compile (no syntax errors)
-        run: python -m py_compile server.py
+        run: python -m py_compile ani_gui/server.py
 
       - name: Ruff (lint)
         run: |
