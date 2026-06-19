@@ -65,6 +65,16 @@
   }
   .item:hover { background: var(--surface-2); }
   .item.active { border-color: var(--accent); }
+  .item.expanded {
+    flex-wrap: wrap; border-color: var(--accent);
+    padding-bottom: 4px;
+  }
+  .item.expanded .detail-panel { width: 100%; margin-top: 4px; }
+  .detail-panel .panel {
+    background: none; border: none; padding: 8px 0 4px; margin: 0;
+  }
+  .detail-panel .actions { margin-top: 12px; }
+  .detail-panel .eps { margin-bottom: 4px; }
   .item .name { font-weight: 500; flex: 1; }
   .item .meta { color: var(--muted); font-size: 12px; white-space: nowrap; }
   .cover {
@@ -156,6 +166,7 @@
     .cards { grid-template-columns: 1fr; }
 
     .item { padding: 10px; gap: 10px; }
+    .item.expanded { padding-bottom: 6px; }
     .item .meta { font-size: 11px; }
 
     .cover { width: 32px; height: 44px; }
@@ -163,8 +174,9 @@
 
     .panel { padding: 12px; }
     .panel h2 { font-size: 13px; }
-    .panel .actions { flex-wrap: wrap; gap: 6px; }
-    .panel .actions select, .panel .actions button { flex: 1 1 auto; min-width: 0; font-size: 12px; padding: 8px 10px; }
+    .panel .actions, .detail-panel .actions { flex-wrap: wrap; gap: 6px; }
+    .panel .actions select, .panel .actions button,
+    .detail-panel .actions select, .detail-panel .actions button { flex: 1 1 auto; min-width: 0; font-size: 12px; padding: 8px 10px; }
 
     .eps { gap: 4px; }
     .ep { min-width: 34px; padding: 6px 7px; font-size: 12px; }
@@ -208,7 +220,6 @@
     <div class="hint">Pick a series, choose an episode, then play. Playback opens in your chosen player.</div>
 
     <div id="results" class="list"></div>
-    <div id="detail"></div>
   </div>
 
   <div id="continueView" style="display:none">
@@ -309,7 +320,6 @@ $("#searchForm").addEventListener("submit", e => { e.preventDefault(); runSearch
 
 async function runSearch() {
   const q = $("#q").value.trim();
-  $("#detail").innerHTML = "";
   state.selected = null; state.ep = null;
   if (!q) { $("#results").innerHTML = ""; return; }
   $("#results").innerHTML = `<div class="spin">Searching…</div>`;
@@ -338,83 +348,119 @@ function renderResults(results) {
 }
 
 async function selectShow(a, el) {
-  document.querySelectorAll(".item").forEach(i => i.classList.remove("active"));
-  el.classList.add("active");
+  // Collapse any previously-expanded item.
+  const prev = document.querySelector(".item.expanded");
+  if (prev && prev !== el) {
+    prev.classList.remove("expanded", "active");
+    const prevPanel = prev.querySelector(".detail-panel");
+    if (prevPanel) prevPanel.remove();
+  }
+
+  // If clicking the already-expanded item, collapse it.
+  if (el.classList.contains("expanded")) {
+    el.classList.remove("expanded", "active");
+    const panel = el.querySelector(".detail-panel");
+    if (panel) panel.remove();
+    state.selected = null; state.ep = null;
+    return;
+  }
+
+  el.classList.add("active", "expanded");
   state.selected = a; state.ep = null;
-  $("#detail").innerHTML = `<div class="panel"><div class="spin">Loading episodes…</div></div>`;
+
+  // Inject a loading placeholder into the item.
+  const existing = el.querySelector(".detail-panel");
+  if (existing) existing.remove();
+  const loader = document.createElement("div");
+  loader.className = "detail-panel";
+  loader.innerHTML = `<div class="spin">Loading episodes…</div>`;
+  el.appendChild(loader);
+
   try {
     const r = await fetch(`/api/episodes?id=${encodeURIComponent(a.id)}&mode=${state.mode}`);
     const d = await r.json();
     if (d.error) throw new Error(d.error);
-    renderDetail(a, d.episodes);
+    renderDetail(a, d.episodes, el);
   } catch (err) {
-    $("#detail").innerHTML = `<div class="panel"><div class="empty">Error: ${err.message}</div></div>`;
+    loader.innerHTML = `<div class="empty">Error: ${err.message}</div>`;
   }
 }
 
-function renderDetail(a, episodes) {
-  const panel = document.createElement("div");
-  panel.className = "panel";
+function renderDetail(a, episodes, el) {
+  const panel = el.querySelector(".detail-panel");
+  panel.innerHTML = `
+    <div class="panel">
+      <div class="eps"></div>
+      <div class="actions">
+        <select class="ep-select" title="Episode">
+          <option value="">— pick episode —</option>
+          ${episodes.map(ep => `<option value="${ep}">Ep ${ep}</option>`).join("")}
+        </select>
+        <select class="quality-select" title="Quality">
+          <option value="best">Best</option>
+          <option value="1080">1080p</option>
+          <option value="720">720p</option>
+          <option value="480">480p</option>
+          <option value="worst">Worst</option>
+        </select>
+        <button class="primary play-btn" disabled>Play</button>
+        <button class="dl-btn" disabled>Download</button>
+      </div>
+      <div class="status" style="min-height:16px"></div>
+    </div>`;
 
-  let epOpts = "";
+  const status = panel.querySelector(".status");
+  const playBtn = panel.querySelector(".play-btn");
+  const dlBtn = panel.querySelector(".dl-btn");
+  const epSel = panel.querySelector(".ep-select");
+
+  // Populate the episode grid.
+  const epsBox = panel.querySelector(".eps");
   for (const ep of episodes) {
-    epOpts += `<option value="${ep}">Episode ${ep}</option>`;
+    const b = document.createElement("div");
+    b.className = "ep";
+    b.textContent = ep;
+    b.addEventListener("click", () => {
+      epsBox.querySelectorAll(".ep").forEach(x => x.classList.remove("sel"));
+      b.classList.add("sel");
+      state.ep = ep;
+      epSel.value = ep;
+      playBtn.disabled = false;
+      dlBtn.disabled = false;
+    });
+    epsBox.appendChild(b);
   }
 
-  panel.innerHTML = `
-    <div style="display:flex; gap:14px; margin-bottom:14px;">
-      ${coverImg(a.thumbnail, "cover lg")}
-      <div style="min-width:0;">
-        <h2></h2>
-        <div class="sub" style="margin:4px 0 0;">${episodes.length} episode${episodes.length===1?"":"s"} · ${state.mode}</div>
-      </div>
-    </div>
-    <div class="actions">
-      <select id="epSelect" title="Episode" style="min-width:120px">
-        <option value="">— pick episode —</option>
-        ${epOpts}
-      </select>
-      <select id="quality" title="Quality">
-        <option value="best">Best</option>
-        <option value="1080">1080p</option>
-        <option value="720">720p</option>
-        <option value="480">480p</option>
-        <option value="worst">Worst</option>
-      </select>
-      <button class="primary" id="playBtn" disabled>Play</button>
-      <button id="dlBtn" disabled>Download</button>
-    </div>
-    <div class="status" id="status"></div>`;
-  panel.querySelector("h2").textContent = a.name;
-
-  const epSel = panel.querySelector("#epSelect");
   epSel.addEventListener("change", () => {
     state.ep = epSel.value || null;
-    panel.querySelector("#playBtn").disabled = !state.ep;
-    panel.querySelector("#dlBtn").disabled = !state.ep;
+    playBtn.disabled = !state.ep;
+    dlBtn.disabled = !state.ep;
+    if (state.ep) {
+      epsBox.querySelectorAll(".ep").forEach(x => x.classList.remove("sel"));
+      const match = epsBox.querySelector(`.ep:nth-child(${episodes.indexOf(state.ep) + 1})`);
+      if (match) { match.classList.add("sel"); epSel.value = state.ep; }
+    }
   });
 
   if (episodes.length === 0) {
     epSel.disabled = true;
-    epSel.innerHTML = `<option value="">No episodes available</option>`;
+    epSel.innerHTML = `<option value="">No episodes</option>`;
   }
 
-  panel.querySelector("#playBtn").addEventListener("click", () => doPlay(panel, false));
-  panel.querySelector("#dlBtn").addEventListener("click", () => doPlay(panel, true));
-  $("#detail").innerHTML = "";
-  $("#detail").appendChild(panel);
+  playBtn.addEventListener("click", () => doPlay({panel, status, playBtn, dlBtn}, false));
+  dlBtn.addEventListener("click", () => doPlay({panel, status, playBtn, dlBtn}, true));
 }
 
-async function doPlay(panel, download) {
-  const status = panel.querySelector("#status");
-  const btns = panel.querySelectorAll("button");
+async function doPlay(els, download) {
+  const { status, playBtn, dlBtn } = els;
   if (state.ep == null) {
     status.className = "status err"; status.textContent = "Pick an episode first."; return;
   }
   setStatus(status, "work", download
     ? `Asking ani-cli to download episode ${state.ep}…`
     : `Resolving episode ${state.ep} via ani-cli (finding a working source)…`);
-  btns.forEach(b => b.disabled = true);
+  playBtn.disabled = true;
+  dlBtn && (dlBtn.disabled = true);
   try {
     const r = await fetch("/api/play", {
       method: "POST", headers: {"Content-Type": "application/json"},
@@ -422,7 +468,7 @@ async function doPlay(panel, download) {
         query: $("#q").value.trim(),
         nth: state.selected.nth,
         ep: state.ep,
-        quality: panel.querySelector("#quality").value,
+        quality: els.panel.querySelector(".quality-select").value,
         mode: state.mode,
         player: state.player,
         download,
@@ -433,7 +479,8 @@ async function doPlay(panel, download) {
   } catch (err) {
     setStatus(status, "err", "Couldn't reach the server: " + err.message);
   } finally {
-    btns.forEach(b => b.disabled = false);
+    playBtn.disabled = false;
+    dlBtn && (dlBtn.disabled = false);
   }
 }
 
