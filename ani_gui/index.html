@@ -132,6 +132,40 @@
   .dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; vertical-align: middle; margin-right: 5px; }
   .dot.ok { background: var(--accent); }
   .dot.bad { background: #c46; }
+
+  @media (max-width: 640px) {
+    .wrap { padding: 16px 12px 48px; }
+
+    header { flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+    header h1 { font-size: 16px; }
+
+    .bar {
+      flex-wrap: wrap;
+    }
+    .bar input[type=text] { flex: 1 1 100%; min-width: 0; }
+    .bar select, .bar button { flex: 0 0 auto; }
+
+    .tabs { gap: 12px; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    .tab { font-size: 12px; white-space: nowrap; padding: 8px 1px; }
+
+    .cards { grid-template-columns: 1fr; }
+
+    .item { padding: 10px; gap: 10px; }
+    .item .meta { font-size: 11px; }
+
+    .cover { width: 32px; height: 44px; }
+    .cover.lg { width: 48px; height: 66px; }
+
+    .panel { padding: 12px; }
+    .panel h2 { font-size: 13px; }
+    .panel .actions { flex-wrap: wrap; gap: 8px; }
+    .panel .actions select, .panel .actions button { flex: 1 1 auto; }
+
+    .eps { gap: 4px; }
+    .ep { min-width: 34px; padding: 6px 7px; font-size: 12px; }
+
+    footer { flex-direction: column; gap: 6px; align-items: flex-start; }
+  }
 </style>
 </head>
 <body>
