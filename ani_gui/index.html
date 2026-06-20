@@ -157,7 +157,40 @@
     100% { transform: translateX(250%); }
   }
   .meta.failed { color: #ff7a7a; }
+  .meta.stalled { color: #e0b341; }
   .dl-note { color: #ff7a7a; font-size: 11px; margin-top: 4px; }
+  .dl-note.warn { color: #e0b341; }
+  .prog-bar .fill.stalled { animation: none; background: #e0b341; }
+  .dl-cancel {
+    font-size: 11px; padding: 4px 8px; margin-top: 6px;
+    border: 1px solid var(--border-strong); border-radius: 6px;
+    background: var(--surface-2); color: var(--muted); cursor: pointer;
+  }
+  .dl-cancel:hover { border-color: #ff7a7a; color: #ff7a7a; }
+
+  /* Downloads grouped by series into a collapsible accordion. */
+  .dl-group {
+    border: 1px solid var(--border); border-radius: 8px;
+    background: var(--surface); margin-bottom: 6px; overflow: hidden;
+  }
+  .dl-group-head {
+    display: flex; align-items: center; gap: 12px; padding: 9px 11px; cursor: pointer;
+  }
+  .dl-group-head:hover { background: var(--surface-2); }
+  .dl-group-info { flex: 1; min-width: 0; }
+  .dl-group-title { font-weight: 500; display: block; }
+  .dl-group-sum { color: var(--muted); font-size: 12px; }
+  .dl-group-sum.has-failed { color: #ff7a7a; }
+  .dl-group-sum.has-stalled { color: #e0b341; }
+  .dl-group .caret {
+    flex: none; color: var(--faint); font-size: 16px; line-height: 1;
+    transition: transform .15s ease;
+  }
+  .dl-group.open .caret { transform: rotate(90deg); }
+  .dl-group-body { display: none; padding: 2px 11px 8px; border-top: 1px solid var(--border); }
+  .dl-group.open .dl-group-body { display: block; }
+  .dl-group-body .item { background: var(--bg); margin-top: 6px; }
+  .dl-group-body .item .name { color: var(--muted); font-weight: 400; }
 
   @media (max-width: 640px) {
     .wrap { padding: 16px 12px 48px; }
@@ -522,6 +555,7 @@ async function doPlay(els, download) {
         mode: state.mode,
         player: state.player,
         download,
+        title: state.selected.name,
         thumbnail: download ? (state.selected.thumbnail || "") : undefined,
       })});
     const d = await r.json();
@@ -538,7 +572,7 @@ async function doPlay(els, download) {
           const listBox = document.querySelector("#downloadsList .list");
           if (listBox) {
             const ep = state.ep;
-            const title = $("#q").value.trim();
+            const title = state.selected.name;
             const qual = els.panel.querySelector(".quality-select").value;
             const now = new Date().toISOString().replace("T"," ").slice(0,16);
             const el = document.createElement("div");
@@ -583,6 +617,7 @@ async function downloadAll(els, episodes) {
           mode: state.mode,
           player: state.player,
           download: true,
+          title: state.selected.name,
           thumbnail: state.selected.thumbnail || "",
         })});
       done++;
@@ -638,12 +673,17 @@ function renderContinue(items) {
       <div class="body">
         <div class="title"></div>
         <div class="prog">${prog}</div>
-        <button class="primary"${caughtUp ? " disabled" : ""}>Resume ep ${it.next_ep ?? it.watched}</button>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:auto">
+          <button class="primary resume-btn"${caughtUp ? " disabled" : ""}>Resume ep ${it.next_ep ?? it.watched}</button>
+          <button class="dl-btn"${caughtUp ? " disabled" : ""}>Download ep ${it.next_ep ?? it.watched}</button>
+        </div>
         <div class="status"></div>
       </div>`;
     card.querySelector(".title").textContent = it.title;
     const status = card.querySelector(".status");
-    card.querySelector("button").addEventListener("click", async (e) => {
+
+    // Resume button
+    card.querySelector(".resume-btn").addEventListener("click", async (e) => {
       const btn = e.target;
       btn.disabled = true;
       setStatus(status, "work", `Resolving ep ${it.next_ep} via ani-cli…`);
@@ -661,12 +701,53 @@ function renderContinue(items) {
         btn.disabled = false;
       }
     });
+
+    // Download button
+    card.querySelector(".dl-btn").addEventListener("click", async (e) => {
+      const btn = e.target;
+      const resumeBtn = card.querySelector(".resume-btn");
+      btn.disabled = true;
+      if (resumeBtn) resumeBtn.disabled = true;
+      setStatus(status, "work", `Downloading ep ${it.next_ep}…`);
+      try {
+        const r = await fetch("/api/resume", {
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({ id: it.id, title: it.title, ep: it.next_ep,
+                                 mode: it.mode, player: state.player,
+                                 download: true })});
+        const d = await r.json();
+        if (d.ok) {
+          setStatus(status, "ok", d.message);
+          _downloadsDirty = true;
+        } else {
+          setStatus(status, "err", d.error || "Download failed.");
+        }
+      } catch (err) {
+        setStatus(status, "err", "Couldn't reach the server: " + err.message);
+      } finally {
+        btn.disabled = false;
+        if (resumeBtn) resumeBtn.disabled = false;
+      }
+    });
     grid.appendChild(card);
   }
 }
 
 let _forYouCache = null;
 let _forYouMode = null;
+
+// Warm the recommendations cache in the background shortly after load, so the
+// "For You" tab opens instantly. It's a slow call (AniList + AllAnime lookups);
+// the server caches the result, so this one-time cost usually finishes while
+// the user is browsing Search/Continue. Harmless and fast when there's no
+// history (returns an empty list immediately).
+setTimeout(() => {
+  if (_forYouCache) return;
+  fetch(`/api/recommendations?mode=${state.mode}`)
+    .then(r => r.json())
+    .then(d => { if (d.items && !_forYouCache) { _forYouCache = d.items; _forYouMode = state.mode; } })
+    .catch(() => {});
+}, 1200);
 
 async function loadForYou() {
   const box = $("#forYouList");
@@ -739,24 +820,29 @@ function escHtml(s) {
 let _downloadsDirty = false;
 let _downloadsPoll = null;
 
-// Live progress detail shown next to a downloading item: "45% · 2.3MiB/s · ETA 0:42",
+const DL_ICON = { downloading: "⏳", stalled: "⚠", done: "✓", failed: "✗", cancelled: "⏹" };
+
+// Live progress detail shown next to an active item: "45% · 2.3MiB/s · ETA 0:42",
 // falling back to whatever the downloader gives us (bytes, or nothing).
 function dlProgressText(di) {
-  if (di.status !== "downloading") return "";
+  if (di.status !== "downloading" && di.status !== "stalled") return "";
   const bits = [];
   if (typeof di.percent === "number") bits.push(di.percent.toFixed(0) + "%");
-  if (di.speed) bits.push(di.speed);
-  if (di.eta) bits.push("ETA " + di.eta);
-  if (!bits.length && di.downloaded) bits.push(di.downloaded);
+  if (di.status === "downloading") {
+    if (di.speed) bits.push(di.speed);
+    if (di.eta) bits.push("ETA " + di.eta);
+    if (!bits.length && di.downloaded) bits.push(di.downloaded);
+  }
   return bits.length ? " · " + bits.join(" · ") : "";
 }
 
-// Apply a determinate width when we have a real percent, else leave the bar
-// indeterminate (animated) for the "still resolving / no percent" phase.
+// Determinate width when we have a real percent; indeterminate (animated)
+// during the "still resolving / no percent" phase; frozen amber when stalled.
 function applyProgressBar(item, di) {
   const info = item.querySelector(".dl-info");
   let bar = item.querySelector(".prog-bar");
-  if (di.status === "downloading") {
+  const active = di.status === "downloading" || di.status === "stalled";
+  if (active) {
     if (!bar) {
       bar = document.createElement("div");
       bar.className = "prog-bar";
@@ -764,15 +850,88 @@ function applyProgressBar(item, di) {
       info.appendChild(bar);
     }
     const fill = bar.querySelector(".fill");
+    const stalled = di.status === "stalled";
+    fill.classList.toggle("stalled", stalled);
     if (typeof di.percent === "number") {
       fill.classList.add("det");
       fill.style.width = Math.max(2, Math.min(100, di.percent)) + "%";
+    } else if (stalled) {
+      fill.classList.add("det");
+      fill.style.width = "100%";
     } else {
       fill.classList.remove("det");
       fill.style.width = "";
     }
   } else if (bar) {
     bar.remove();
+  }
+}
+
+// Reconcile one download row's dynamic parts (meta, bar, note, cancel, files)
+// from a record. Used by both the initial render and the live poll so the two
+// can never drift.
+function updateDownloadItem(el, di) {
+  const info = el.querySelector(".dl-info");
+  const meta = el.querySelector(".meta");
+  const icon = DL_ICON[di.status] || "";
+  const partial = di.partial ? " · partial" : "";
+  meta.textContent = `${icon} ${di.mode} · ${di.quality} · ${di.time}${dlProgressText(di)}${partial}`;
+  meta.classList.toggle("failed", di.status === "failed");
+  meta.classList.toggle("stalled", di.status === "stalled");
+  el.style.opacity = di.status === "done" ? "0.6" : di.status === "failed" ? "0.8" : "1";
+
+  applyProgressBar(el, di);
+
+  // Explanatory note for failed / stalled states.
+  const noteText = di.status === "failed"
+    ? "No file found — this download may have failed. Try again from Search."
+    : di.status === "stalled"
+    ? "Stalled — the source stopped responding. Cancel to keep the partial file, or retry from Search."
+    : "";
+  let note = el.querySelector(".dl-note");
+  if (noteText) {
+    if (!note) { note = document.createElement("div"); note.className = "dl-note"; info.appendChild(note); }
+    note.textContent = noteText;
+    note.classList.toggle("warn", di.status === "stalled");
+  } else if (note) { note.remove(); }
+
+  // Cancel button while a download is active (and addressable by id).
+  let cancel = el.querySelector(".dl-cancel");
+  if ((di.status === "downloading" || di.status === "stalled") && di.id) {
+    if (!cancel) {
+      cancel = document.createElement("button");
+      cancel.className = "dl-cancel";
+      cancel.textContent = "Cancel";
+      cancel.dataset.id = di.id;
+      cancel.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        cancel.disabled = true;
+        cancel.textContent = "Stopping…";
+        try {
+          await fetch("/api/cancel-download", {
+            method: "POST", headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({id: cancel.dataset.id}),
+          });
+        } catch (_) {}
+        refreshDownloadStatus();
+      });
+      info.appendChild(cancel);
+    }
+  } else if (cancel) { cancel.remove(); }
+
+  // Play-file buttons for any matched files (kept in sync as files appear).
+  const files = di.files || [];
+  let filesBox = el.querySelector(".dl-files");
+  const known = filesBox
+    ? [...filesBox.querySelectorAll(".play-file-btn")].map(b => b.dataset.path) : [];
+  if (files.length && files.join("|") !== known.join("|")) {
+    if (!filesBox) { filesBox = document.createElement("div"); filesBox.className = "dl-files"; info.appendChild(filesBox); }
+    filesBox.innerHTML = files.map(f =>
+      `<button class="play-file-btn" data-path="${escHtml(f)}" style="font-size:11px;padding:4px 8px;margin-right:4px;margin-top:6px">▶ ${escHtml(f.split('/').pop().slice(0,30))}</button>`
+    ).join("");
+    wirePlayFileButtons(filesBox);
+  } else if (!files.length && filesBox) {
+    filesBox.remove();
   }
 }
 
@@ -792,10 +951,11 @@ async function loadDownloads() {
     const d = await r.json();
     if (d.error) throw new Error(d.error);
     renderDownloads(d.items);
+    _dlStructure = dlStructure(d.items);
     _downloadsDirty = false;
     // Poll fast while a download is active (for smooth realtime progress),
     // slow when everything's idle. The cadence re-evaluates every tick.
-    scheduleDownloadsPoll(d.items.some(i => i.status === "downloading"));
+    scheduleDownloadsPoll(d.items.some(i => i.status === "downloading" || i.status === "stalled"));
   } catch (err) {
     box.innerHTML = `<div class="empty">Couldn't load download history.</div>`;
   }
@@ -805,6 +965,13 @@ function scheduleDownloadsPoll(active) {
   if (_downloadsPoll) clearTimeout(_downloadsPoll);
   _downloadsPoll = setTimeout(refreshDownloadStatus, active ? 1000 : 5000);
 }
+
+// Structural fingerprint — which series/episodes exist (not their status).
+// Status changes update in place; structure changes trigger a full re-render.
+function dlStructure(items) {
+  return items.map(d => (d.title || "") + "|" + d.ep).join(",");
+}
+let _dlStructure = "";
 
 async function refreshDownloadStatus() {
   if ($("#downloadsView").style.display === "none") {
@@ -816,58 +983,36 @@ async function refreshDownloadStatus() {
     const r = await fetch("/api/downloads");
     const d = await r.json();
     if (d.error) { scheduleDownloadsPoll(false); return; }
-    active = d.items.some(i => i.status === "downloading");
-    const items = document.querySelectorAll("#downloadsList .item");
-    // If a new download was queued (or the count otherwise drifted), the
-    // incremental index update can't add rows — do a full re-render instead.
-    if (_downloadsDirty || items.length !== d.items.length) {
+    active = d.items.some(i => i.status === "downloading" || i.status === "stalled");
+    const struct = dlStructure(d.items);
+    // A new download (or any change to which episodes exist) needs a full
+    // re-render to add/remove rows; otherwise patch statuses in place.
+    if (_downloadsDirty || struct !== _dlStructure) {
       renderDownloads(d.items);
+      _dlStructure = struct;
       _downloadsDirty = false;
       scheduleDownloadsPoll(active);
       return;
     }
-    for (let i = 0; i < Math.min(items.length, d.items.length); i++) {
-      const di = d.items[i];
-      const meta = items[i].querySelector(".meta");
-      const icon = di.status === "downloading" ? "⏳" : di.status === "done" ? "✓" : di.status === "failed" ? "✗" : "";
-      // Rebuild the meta line cleanly from the record (no string surgery).
-      meta.textContent = `${icon} ${di.mode} · ${di.quality} · ${di.time}${dlProgressText(di)}`;
-      meta.classList.toggle("failed", di.status === "failed");
-      items[i].style.opacity = di.status === "done" ? "0.6" : di.status === "failed" ? "0.8" : "1";
-      const info = items[i].querySelector(".dl-info");
-      applyProgressBar(items[i], di);
-      // Failed downloads get an explanatory note instead of silently
-      // looking the same as a finished one.
-      let note = items[i].querySelector(".dl-note");
-      if (di.status === "failed" && !note) {
-        note = document.createElement("div");
-        note.className = "dl-note";
-        note.textContent = "No file found — this download may have failed. Try again from Search.";
-        info.appendChild(note);
-      } else if (di.status !== "failed" && note) {
-        note.remove();
-      }
-      // Files matched after the initial render (e.g. the download finished
-      // mid-poll) should get Play buttons too, not just on first load.
-      const files = di.files || [];
-      let filesBox = items[i].querySelector(".dl-files");
-      const knownPaths = filesBox
-        ? [...filesBox.querySelectorAll(".play-file-btn")].map(b => b.dataset.path)
-        : [];
-      if (files.length && files.join("|") !== knownPaths.join("|")) {
-        if (!filesBox) {
-          filesBox = document.createElement("div");
-          filesBox.className = "dl-files";
-          info.appendChild(filesBox);
-        }
-        filesBox.innerHTML = files.map(f =>
-          `<button class="play-file-btn" data-path="${escHtml(f)}" style="font-size:11px;padding:4px 8px;margin-right:4px;margin-top:6px">▶ ${escHtml(f.split('/').pop().slice(0,30))}</button>`
-        ).join("");
-        wirePlayFileButtons(filesBox);
-      }
+    // Patch each row by its stable key, and refresh each group's header.
+    const byKey = new Map(d.items.map(x => [downloadKey(x), x]));
+    document.querySelectorAll("#downloadsList .item").forEach(el => {
+      const di = byKey.get(el.dataset.key);
+      if (di) updateDownloadItem(el, di);
+    });
+    for (const g of groupDownloads(d.items)) {
+      if (g.items.length === 1) continue;
+      const head = document.querySelector(
+        `#downloadsList .dl-group[data-title="${cssEsc(g.title)}"] .dl-group-head`);
+      if (head) updateDownloadGroupHeader(head, g.items);
     }
   } catch (_) {}
   scheduleDownloadsPoll(active);
+}
+
+// Escape a string for use in a [data-title="…"] attribute selector.
+function cssEsc(s) {
+  return (window.CSS && CSS.escape) ? CSS.escape(s) : s.replace(/["\\]/g, "\\$&");
 }
 
 function wirePlayFileButtons(scope) {
@@ -892,6 +1037,130 @@ function wirePlayFileButtons(scope) {
   });
 }
 
+// Which series accordions the user has expanded (remembered across re-renders).
+const _dlExpanded = new Set();
+
+const downloadKey = d => d.id || (d.title + "||" + d.ep);
+
+// Group flat download records by series, newest series first, episodes within
+// a series sorted ascending. A series with a single download stays a flat row;
+// a series with several (e.g. from "Download All") becomes one accordion.
+function groupDownloads(items) {
+  const order = [];
+  const byTitle = new Map();
+  for (const d of items) {
+    const t = d.title || "";
+    if (!byTitle.has(t)) { byTitle.set(t, []); order.push(t); }
+    byTitle.get(t).push(d);
+  }
+  return order.map(t => {
+    const eps = byTitle.get(t).slice().sort(
+      (a, b) => (parseFloat(a.ep) || 0) - (parseFloat(b.ep) || 0));
+    return { title: t, items: eps };
+  });
+}
+
+// Aggregate stats for a series group: counts per status + overall percent.
+function dlGroupStats(items) {
+  const c = { done: 0, downloading: 0, stalled: 0, failed: 0, total: items.length };
+  let prog = 0;
+  for (const d of items) {
+    if (d.status === "done") { c.done++; prog += 100; }
+    else if (d.status === "downloading") { c.downloading++; prog += (typeof d.percent === "number" ? d.percent : 0); }
+    else if (d.status === "stalled") { c.stalled++; prog += (typeof d.percent === "number" ? d.percent : 100); }
+    else if (d.status === "failed") c.failed++;
+  }
+  c.pct = items.length ? prog / items.length : 0;
+  c.active = c.downloading > 0 || c.stalled > 0;
+  return c;
+}
+
+function dlGroupSummary(c) {
+  const parts = [`${c.total} ep${c.total === 1 ? "" : "s"}`];
+  if (c.done) parts.push(`${c.done} done`);
+  if (c.downloading) parts.push(`${c.downloading} downloading`);
+  if (c.stalled) parts.push(`${c.stalled} stalled`);
+  if (c.failed) parts.push(`${c.failed} failed`);
+  return parts.join(" · ");
+}
+
+// Build a single download row (skeleton + dynamic parts via updateDownloadItem).
+// `grouped` rows drop the cover and series prefix since the group header has them.
+function makeDownloadRow(d, grouped) {
+  const el = document.createElement("div");
+  el.className = "item";
+  el.dataset.key = downloadKey(d);
+  const name = grouped
+    ? `Episode ${escHtml(String(d.ep))}`
+    : `${escHtml(d.title)} — ep ${escHtml(String(d.ep))}`;
+  el.innerHTML = `
+    ${grouped ? "" : coverImg(d.thumbnail)}
+    <span class="dl-info" style="flex:1;min-width:0">
+      <span class="name" style="display:block">${name}</span>
+      <span class="meta"></span>
+    </span>`;
+  el.title = (d.files || []).length ? `Files: ${d.files.join(', ')}` : `Saved to: ${d.dir}`;
+  updateDownloadItem(el, d);
+  return el;
+}
+
+// Refresh a group header's summary text + aggregate progress bar in place.
+function updateDownloadGroupHeader(head, items) {
+  const c = dlGroupStats(items);
+  const sum = head.querySelector(".dl-group-sum");
+  sum.textContent = dlGroupSummary(c);
+  sum.classList.toggle("has-failed", c.failed > 0 && !c.active);
+  sum.classList.toggle("has-stalled", c.stalled > 0);
+  // Aggregate bar across the whole series, shown only while something's active.
+  const info = head.querySelector(".dl-group-info");
+  let bar = head.querySelector(".prog-bar");
+  if (c.active) {
+    if (!bar) {
+      bar = document.createElement("div");
+      bar.className = "prog-bar";
+      bar.innerHTML = '<div class="fill det"></div>';
+      info.appendChild(bar);
+    }
+    const fill = bar.querySelector(".fill");
+    fill.classList.toggle("stalled", c.stalled > 0 && c.downloading === 0);
+    fill.style.width = Math.max(2, Math.min(100, c.pct)) + "%";
+  } else if (bar) {
+    bar.remove();
+  }
+  head.parentElement.style.opacity = (!c.active && c.done === c.total) ? "0.7" : "1";
+}
+
+function makeDownloadGroup(group) {
+  const wrap = document.createElement("div");
+  wrap.className = "dl-group";
+  wrap.dataset.title = group.title;
+  if (_dlExpanded.has(group.title)) wrap.classList.add("open");
+
+  const head = document.createElement("div");
+  head.className = "dl-group-head";
+  head.innerHTML = `
+    ${coverImg(group.items[0].thumbnail)}
+    <span class="dl-group-info">
+      <span class="dl-group-title"></span>
+      <span class="dl-group-sum"></span>
+    </span>
+    <span class="caret">›</span>`;
+  head.querySelector(".dl-group-title").textContent = group.title;
+  head.addEventListener("click", () => {
+    const open = wrap.classList.toggle("open");
+    if (open) _dlExpanded.add(group.title); else _dlExpanded.delete(group.title);
+  });
+
+  const body = document.createElement("div");
+  body.className = "dl-group-body";
+  for (const d of group.items) body.appendChild(makeDownloadRow(d, true));
+
+  wrap.appendChild(head);
+  wrap.appendChild(body);
+  updateDownloadGroupHeader(head, group.items);
+  return wrap;
+}
+
 function renderDownloads(items) {
   const box = $("#downloadsList");
   if (!items.length) {
@@ -900,41 +1169,12 @@ function renderDownloads(items) {
   }
   box.innerHTML = `<div class="list"></div>`;
   const list = box.querySelector(".list");
-  for (const d of items) {
-    const el = document.createElement("div");
-    el.className = "item";
-    const files = d.files || [];
-    const statusIcon = d.status === "downloading" ? "⏳" : d.status === "done" ? "✓" : d.status === "failed" ? "✗" : "";
-    const playBtns = (files || []).map(f =>
-      `<button class="play-file-btn" data-path="${escHtml(f)}" style="font-size:11px;padding:4px 8px;margin-right:4px;margin-top:6px">▶ ${escHtml(f.split('/').pop().slice(0,30))}</button>`
-    ).join("");
-    // The bar is determinate when we have a real percent, else indeterminate
-    // (covers the "still resolving the stream" phase before a percent exists).
-    const pct = (d.status === "downloading" && typeof d.percent === "number")
-      ? Math.max(2, Math.min(100, d.percent)) : null;
-    const bar = d.status === "downloading"
-      ? `<div class="prog-bar"><div class="fill${pct !== null ? " det" : ""}"${pct !== null ? ` style="width:${pct}%"` : ""}></div></div>`
-      : "";
-    const note = d.status === "failed"
-      ? `<div class="dl-note">No file found — this download may have failed. Try again from Search.</div>`
-      : "";
-    // Play buttons and the progress bar live outside .meta on purpose —
-    // refreshDownloadStatus() rewrites .meta's text on every poll, which
-    // would otherwise wipe out any buttons placed inside it.
-    el.innerHTML = `
-      ${coverImg(d.thumbnail)}
-      <span class="dl-info" style="flex:1;min-width:0">
-        <span class="name" style="display:block">${escHtml(d.title)} — ep ${escHtml(String(d.ep))}</span>
-        <span class="meta${d.status === "failed" ? " failed" : ""}">${statusIcon} ${escHtml(d.mode)} · ${escHtml(d.quality)} · ${escHtml(d.time)}${dlProgressText(d)}</span>
-        ${bar}
-        ${note}
-        ${playBtns ? `<div class="dl-files">${playBtns}</div>` : ""}
-      </span>`;
-    el.title = files.length ? `Files: ${files.join(', ')}` : `Saved to: ${d.dir}`;
-    el.style.opacity = d.status === "done" ? "0.6" : d.status === "failed" ? "0.8" : "1";
-    list.appendChild(el);
+  for (const g of groupDownloads(items)) {
+    // One episode → a plain row; several → a collapsible series accordion.
+    list.appendChild(g.items.length === 1
+      ? makeDownloadRow(g.items[0], false)
+      : makeDownloadGroup(g));
   }
-  wirePlayFileButtons(list);
   box.insertAdjacentHTML("beforeend",
     `<div class="hint" style="margin-top:12px">Files saved to <code>${escHtml(items[0].dir)}</code> (or <code>$ANI_CLI_DOWNLOAD_DIR</code> if set).</div>`);
 }

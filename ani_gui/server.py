@@ -18,6 +18,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -30,7 +31,7 @@ from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-VERSION = "0.4.0"
+VERSION = "0.4.1"
 ANI_CLI_RAW = "https://raw.githubusercontent.com/pystardust/ani-cli/master/ani-cli"
 
 # --- AllAnime API (mirrors the constants inside the ani-cli script) ----------
@@ -48,6 +49,10 @@ _wiki_cover_lock = threading.Lock()
 # AniList recommendation cache (show title -> [(title, cover_url), …])
 _anilist_recs_cache = {}
 _anilist_recs_lock = threading.Lock()
+
+# Final "For You" results cache, keyed by (mode, recent-history signature).
+_recs_cache = {"key": None, "value": None, "ts": 0}
+_recs_cache_lock = threading.Lock()
 
 SEARCH_GQL = ("query( $search: SearchInput $limit: Int $page: Int "
               "$translationType: VaildTranslationTypeEnumType "
@@ -92,10 +97,22 @@ _settings_lock = threading.Lock()
 _active_downloads = {}
 _active_lock = threading.Lock()
 
+# If a download's percentage hasn't advanced in this many seconds while the
+# process is still alive, we treat it as stalled (e.g. the streaming source
+# dropped the connection or its auth token expired) rather than leaving the
+# progress bar spinning forever.
+STALL_SECS = 60
+
 
 def _set_progress(dl_id, data):
     with _active_lock:
-        _active_downloads.setdefault(dl_id, {}).update(data)
+        cur = _active_downloads.setdefault(dl_id, {})
+        # Track forward progress so a stall (percent stuck) can be detected.
+        pct = data.get("percent")
+        if isinstance(pct, (int, float)) and pct > cur.get("_max_pct", -1):
+            cur["_max_pct"] = pct
+            cur["_advance_ts"] = time.time()
+        cur.update(data)
 
 
 def _finish_progress(dl_id, returncode):
@@ -112,6 +129,28 @@ def _finish_progress(dl_id, returncode):
                 key=lambda kv: kv[1])
             for k, _ in finished[:len(_active_downloads) - 80]:
                 _active_downloads.pop(k, None)
+
+
+def cancel_download(dl_id):
+    """Stop an in-flight download by killing its process group, keeping any
+    partial file already on disk. Used for stalled downloads where the source
+    connection died near the end but the part fetched is still watchable."""
+    rec = next((d for d in _read_downloads() if d.get("id") == dl_id), None)
+    if not rec:
+        return {"ok": False, "error": "download not found"}
+    pid = rec.get("pid")
+    if pid and os.name == "posix":
+        try:
+            # start_new_session put ani-cli + its downloader in one group;
+            # killing the group stops aria2c/yt-dlp too.
+            os.killpg(os.getpgid(pid), signal.SIGTERM)
+        except (OSError, ProcessLookupError):
+            pass
+    with _active_lock:
+        cur = _active_downloads.setdefault(dl_id, {})
+        cur["cancelled"] = True
+    _finish_progress(dl_id, -1)
+    return {"ok": True}
 
 
 def _parse_progress_line(line):
@@ -161,7 +200,8 @@ def _parse_progress_line(line):
 
 def _watch_download(dl_id, master_fd, proc):
     """Read the download's terminal output, parse progress, mark completion."""
-    _set_progress(dl_id, {"downloading": True, "percent": None})
+    _set_progress(dl_id, {"downloading": True, "percent": None,
+                          "_advance_ts": time.time()})
     buf = b""
     try:
         while True:
@@ -390,32 +430,35 @@ def _record_download(title, ep, quality, mode, pid=None, thumbnail="", dl_id=Non
     _write_downloads(items[:50])
 
 
-_STOPWORDS = {"the", "a", "an", "of", "in", "on", "is", "to", "and", "or", "for"}
+def _norm_name(s):
+    """Normalise a title the way ani-cli does when it builds a filename.
 
-
-def _title_tokens(title):
-    """Significant words from a title, for matching against filenames."""
-    words = re.findall(r"[a-z0-9]+", title.lower())
-    return [w for w in words if len(w) > 2 and w not in _STOPWORDS]
+    ani-cli does ``cut -d'(' -f1 | tr -d '[:punct:]'`` on the show's canonical
+    AllAnime name, so the file is ``<name without punctuation> Episode <N>.mp4``.
+    We mirror that — drop everything from the first ``(``, strip punctuation,
+    collapse whitespace, lowercase — so a record's title lines up with the
+    real filename regardless of colons, dashes, etc."""
+    s = s.split("(")[0]
+    s = re.sub(r"[^\w\s]|_", "", s)      # tr -d '[:punct:]' (underscore included)
+    return re.sub(r"\s+", " ", s).strip().lower()
 
 
 def _match_download_files(entry, files):
     """Match a download record to files already on disk.
 
-    Precise on purpose: ani-cli names downloads "<Title> Episode <N>.<ext>",
-    so we require an exact "Episode <N>" token (not just the digits anywhere
-    in the name) plus every significant word from the title. A bare
-    substring match on the episode number or a single common word matched
-    unrelated downloads sitting in the same folder."""
+    ani-cli names downloads "<canonical title> Episode <N>.<ext>", so we
+    require an exact "Episode <N>" token plus the normalised title appearing
+    in the filename. The title must be the *canonical AllAnime name* (what
+    ani-cli names the file after), not the user's search term — e.g. a search
+    for "super cube" downloads "Chao Neng Lifang Chaofan Pian Episode 8.mp4"."""
     ep = str(entry.get("ep", ""))
     ep_re = re.compile(rf"episode\s*0*{re.escape(ep)}(?!\d)", re.I)
-    tokens = _title_tokens(entry.get("title", ""))
+    title_norm = _norm_name(entry.get("title", ""))
     out = []
     for f in files:
-        fn = f["name"].lower()
-        if not ep_re.search(fn):
+        if not ep_re.search(f["name"].lower()):
             continue
-        if tokens and not all(t in fn for t in tokens):
+        if title_norm and title_norm not in _norm_name(f["name"]):
             continue
         out.append(f)
     return out
@@ -475,7 +518,11 @@ def _downloads_with_status():
             live = dict(_active_downloads.get(d.get("id") or "", {}))
 
         if live.get("downloading"):
-            d["status"] = "downloading"
+            # Detect a stall: process still alive but no forward progress for
+            # a while (dead source connection / expired stream token).
+            adv = live.get("_advance_ts", 0)
+            stalled = bool(adv and now - adv > STALL_SECS)
+            d["status"] = "stalled" if stalled else "downloading"
             if live.get("percent") is not None:
                 d["percent"] = live["percent"]
             for k in ("speed", "eta", "downloaded", "total"):
@@ -486,7 +533,13 @@ def _downloads_with_status():
 
         if "returncode" in live:
             # The downloader finished and told us how it went — trust it.
-            d["status"] = "done" if live["returncode"] == 0 else "failed"
+            if live.get("cancelled"):
+                # User stopped a stalled download; the partial file (if any)
+                # is usually still watchable, so treat it as a usable result.
+                d["status"] = "done" if matched else "failed"
+                d["partial"] = bool(matched)
+            else:
+                d["status"] = "done" if live["returncode"] == 0 else "failed"
             continue
 
         # No live state — fall back to pid liveness + file presence.
@@ -508,7 +561,14 @@ def _downloads_with_status():
             age = 999
 
         if alive:
-            d["status"] = "downloading"
+            # Without live progress (e.g. after a server restart) we infer a
+            # stall from the file: if it exists but hasn't grown in a while,
+            # the downloader is stuck even though its process is still up.
+            newest = max((f["mtime"] for f in matched), default=0)
+            if matched and now - newest > STALL_SECS:
+                d["status"] = "stalled"
+            else:
+                d["status"] = "downloading"
             d["progress_bytes"] = sum(f["size"] for f in matched) if matched else 0
         elif age < 20:
             # Just queued / just exited — don't flash "failed" prematurely.
@@ -544,18 +604,11 @@ def _anilist_recommendations(title):
 
     recs = []
     try:
-        # 1) Find the AniList media ID for this title.
-        search = _anilist_post(
-            "query ($s: String) { Media(search: $s, type: ANIME) { id } }",
-            {"s": title})
-        media = (search.get("data", {}).get("Media") or {})
-        ani_id = media.get("id")
-        if not ani_id:
-            raise ValueError("not found on AniList")
-
-        # 2) Fetch recommendations (highest-rated first).
+        # Search the title and pull its recommendations in a single query —
+        # AniList lets us nest recommendations under a Media(search:) lookup,
+        # so we avoid a second round-trip for the id.
         result = _anilist_post(
-            """query ($id: Int) { Media(id: $id, type: ANIME) {
+            """query ($s: String) { Media(search: $s, type: ANIME) {
               recommendations(sort: RATING_DESC) {
                 nodes {
                   mediaRecommendation {
@@ -566,7 +619,7 @@ def _anilist_recommendations(title):
                 }
               }
             }}""",
-            {"id": ani_id})
+            {"s": title})
 
         nodes = (result.get("data", {})
                  .get("Media", {})
@@ -591,58 +644,87 @@ def recommendations(mode):
     """Generate personalised recommendations from the user's watch history.
 
     For the 5 most-recently-watched shows we ask AniList for similar anime,
-    then deduplicate, drop anything the user has already watched, and
-    cross-reference with AllAnime so we only return titles that actually have
-    episodes in *mode*."""
+    deduplicate, drop anything already watched, and cross-reference with
+    AllAnime so we only return titles that actually have episodes in *mode*.
+
+    Both network-heavy phases run in parallel (AniList lookups, then AllAnime
+    availability checks) and the final list is cached per history signature —
+    a sequential version made 20-30 round-trips and took 10-20s."""
     hist = read_history()
     if not hist:
         return []
 
-    already = {h["id"] for h in hist}
-    seen_names = set()
-    out = []
+    recent = list(reversed(hist[-5:]))
+    sig = (mode, tuple(h["id"] for h in recent))
+    with _recs_cache_lock:
+        c = _recs_cache
+        if c["key"] == sig and time.time() - c["ts"] < 1800:
+            return c["value"]
 
-    # Most-recent first — the newest 5 shows drive recommendations.
-    for h in reversed(hist[-5:]):
-        title = clean_title(h["title"])
-        for rec in _anilist_recommendations(title):
+    already = {h["id"] for h in hist}
+    titles = [clean_title(h["title"]) for h in recent]
+
+    # Phase 1: AniList recommendations for each recent show, in parallel.
+    with ThreadPoolExecutor(max_workers=5) as ex:
+        rec_lists = list(ex.map(_anilist_recommendations, titles))
+
+    # Build a deduped candidate list, a few top picks per show (AniList already
+    # sorts by rating), capped so the availability phase stays bounded.
+    seen_names = set()
+    candidates = []  # (rname, because, anilist_thumb)
+    for because, recs in zip(titles, rec_lists):
+        taken = 0
+        for rec in recs:
             rname = rec["name"]
             if rname in seen_names:
                 continue
             seen_names.add(rname)
+            candidates.append((rname, because, rec.get("thumbnail", "")))
+            taken += 1
+            if taken >= 6:
+                break
+    candidates = candidates[:24]
 
-            # Search AllAnime to see if it's available and get the ID.
+    # Phase 2: check AllAnime availability for every candidate in parallel.
+    def _check(cand):
+        rname, because, anilist_thumb = cand
+        try:
             results = search_anime(rname, mode)
-            if not results:
-                continue
-            best = results[0]
+        except Exception:
+            return None
+        if not results:
+            return None
+        best = results[0]
+        if best["id"] in already:
+            return None
+        thumb = best["thumbnail"]
+        if not thumb or "/api/cover?title=" in thumb:
+            thumb = anilist_thumb or ""
+        return {
+            "id": best["id"],
+            "name": best["name"],
+            "thumbnail": _resolve_thumbnail(thumb, best["name"]),
+            "nth": best["nth"],
+            "sub": best["sub"],
+            "dub": best["dub"],
+            "mode": mode,
+            "because": because,
+        }
 
-            # Skip shows the user already has in history.
-            if best["id"] in already:
-                continue
+    with ThreadPoolExecutor(max_workers=10) as ex:
+        checked = list(ex.map(_check, candidates))
 
-            # Use the AllAnime thumbnail if available, else the AniList one
-            # (which is always a full URL and needs no proxying).
-            thumb = best["thumbnail"]
-            if not thumb or "/api/cover?title=" in thumb:
-                thumb = rec["thumbnail"] or ""
-
-            out.append({
-                "id": best["id"],
-                "name": best["name"],
-                "thumbnail": _resolve_thumbnail(thumb, best["name"]),
-                "nth": best["nth"],
-                "sub": best["sub"],
-                "dub": best["dub"],
-                "mode": mode,
-                "because": title,
-            })
-
-        # Don't overwhelm — 12 recommendations is plenty.
+    out, seen_ids = [], set()
+    for r in checked:
+        if r and r["id"] not in seen_ids:
+            seen_ids.add(r["id"])
+            out.append(r)
         if len(out) >= 12:
             break
 
-    return out[:12]
+    with _recs_cache_lock:
+        _recs_cache.update(key=sig, value=out, ts=time.time())
+    return out
 
 
 def continue_watching(mode):
@@ -697,7 +779,8 @@ def _player_label(player):
     return "your player"
 
 
-def play(query, nth, ep, quality, mode, download=False, player="default", thumbnail=""):
+def play(query, nth, ep, quality, mode, download=False, player="default",
+         thumbnail="", title=""):
     """Run ani-cli for one episode.
 
     For playback we capture ani-cli's output and wait briefly so we can report
@@ -733,6 +816,11 @@ def play(query, nth, ep, quality, mode, download=False, player="default", thumbn
 
     plabel = "the downloader" if download else _player_label(player)
 
+    # The download is recorded under the show's *canonical* name (what ani-cli
+    # names the file after), falling back to the search query if we weren't
+    # given one — so the file-matcher can find it on disk later.
+    rec_title = title or query
+
     if download:
         dl_id = uuid.uuid4().hex
         # Attach the download to a pseudo-terminal so aria2c / yt-dlp / ffmpeg
@@ -755,7 +843,7 @@ def play(query, nth, ep, quality, mode, download=False, player="default", thumbn
                                     stdout=slave, stderr=slave,
                                     env=env, start_new_session=True)
             os.close(slave)
-            _record_download(query, ep, quality, mode, pid=proc.pid,
+            _record_download(rec_title, ep, quality, mode, pid=proc.pid,
                              thumbnail=thumbnail, dl_id=dl_id)
             threading.Thread(target=_watch_download,
                              args=(dl_id, master, proc), daemon=True).start()
@@ -764,23 +852,32 @@ def play(query, nth, ep, quality, mode, download=False, player="default", thumbn
                                     stdout=subprocess.DEVNULL,
                                     stderr=subprocess.DEVNULL,
                                     env=env, start_new_session=True)
-            _record_download(query, ep, quality, mode, pid=proc.pid,
+            _record_download(rec_title, ep, quality, mode, pid=proc.pid,
                              thumbnail=thumbnail, dl_id=dl_id)
         return {"ok": True, "stage": "download", "id": dl_id,
                 "message": f"Downloading episode {ep} in the background "
                            "(saved to ani-cli's download dir)."}
 
     # Playback: ani-cli launches the player detached, then exits — so we can
-    # capture its output to learn whether a source was found.
+    # capture its output to learn whether a source was found. We run it in its
+    # own session so that if it hangs (a dead provider with no curl timeout),
+    # we can kill the *whole group* — otherwise its background link-resolution
+    # subshells leak as orphaned processes.
+    proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, env=env, start_new_session=True)
     try:
-        r = subprocess.run(cmd, stdin=subprocess.DEVNULL,
-                           capture_output=True, text=True, env=env,
-                           start_new_session=True, timeout=90)
-        out = (r.stdout or "") + "\n" + (r.stderr or "")
+        out_s, err_s = proc.communicate(timeout=90)
+        out = (out_s or "") + "\n" + (err_s or "")
     except subprocess.TimeoutExpired:
-        return {"ok": True, "stage": "slow",
-                "message": "Still resolving the stream — this source is slow. "
-                           f"{plabel} should open shortly."}
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        except (OSError, ProcessLookupError):
+            pass
+        proc.wait()
+        return {"ok": False, "stage": "slow",
+                "error": "This source is taking too long to resolve. "
+                         "Try another quality or result."}
 
     low = out.lower()
     if "episode not released" in low:
@@ -793,7 +890,7 @@ def play(query, nth, ep, quality, mode, download=False, player="default", thumbn
 
     fell_back = "specified quality not found" in low
     fetched = "links fetched" in low
-    if not fetched and r.returncode != 0:
+    if not fetched and proc.returncode != 0:
         return {"ok": False, "stage": "failed",
                 "error": "Couldn't resolve a stream. "
                          "Try another quality or result."}
@@ -1080,8 +1177,12 @@ class Handler(BaseHTTPRequestHandler):
                     mode=body.get("mode", "sub"),
                     player=body.get("player", "default"),
                     download=bool(body.get("download")),
-                    thumbnail=body.get("thumbnail", ""))
+                    thumbnail=body.get("thumbnail", ""),
+                    title=body.get("title", ""))
                 return self._send(200 if res.get("ok") else 502, res)
+            if u.path == "/api/cancel-download":
+                res = cancel_download(body.get("id", ""))
+                return self._send(200 if res.get("ok") else 404, res)
             if u.path == "/api/resume":
                 # Resolve the show's search position by id, then play.
                 mode = body.get("mode", "sub")
@@ -1096,7 +1197,8 @@ class Handler(BaseHTTPRequestHandler):
                 res = play(query=title, nth=nth, ep=body["ep"],
                            quality=body.get("quality", "best"), mode=mode,
                            player=body.get("player", "default"),
-                           download=bool(body.get("download")))
+                           download=bool(body.get("download")),
+                           title=title)
                 return self._send(200 if res.get("ok") else 502, res)
             if u.path == "/api/settings":
                 s = _read_settings()
