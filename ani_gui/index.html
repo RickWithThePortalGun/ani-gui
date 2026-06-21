@@ -168,6 +168,37 @@
   .dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; vertical-align: middle; margin-right: 5px; }
   .dot.ok { background: var(--accent); }
   .dot.bad { background: #c46; }
+  .dot.warn { background: #e0b341; }
+
+  .overlay {
+    position: fixed; inset: 0; z-index: 10000; background: rgba(0,0,0,.55);
+    display: flex; align-items: center; justify-content: center; padding: 20px;
+  }
+  .diag-panel {
+    width: 100%; max-width: 560px; max-height: 80vh; overflow: auto;
+    background: var(--surface); border: 1px solid var(--border-strong);
+    border-radius: 10px; padding: 16px 18px;
+  }
+  .diag-head { display: flex; align-items: center; margin-bottom: 12px; }
+  .diag-head .x {
+    margin-left: auto; color: var(--faint); cursor: pointer;
+    border: none; background: none; font-size: 18px;
+  }
+  .diag-problem {
+    background: #2a1f1f; border: 1px solid #5a2f2f; border-radius: 7px;
+    padding: 9px 12px; margin-bottom: 8px; font-size: 13px; color: #ffb4b4;
+  }
+  .diag-ok {
+    color: var(--accent); font-size: 13px; margin-bottom: 12px;
+  }
+  .diag-row {
+    display: flex; gap: 8px; padding: 5px 0; border-bottom: 1px solid var(--border);
+    font-size: 12.5px;
+  }
+  .diag-row .k { color: var(--muted); min-width: 130px; }
+  .diag-row .v { color: var(--text); word-break: break-all; }
+  .diag-row .v.no { color: #ff7a7a; }
+  .diag-row .v.yes { color: var(--accent); }
 
   /* Easter egg — Konami code rains a few petals + shows a toast. */
   .petal {
@@ -349,9 +380,20 @@
     <span id="verInfo">ani-gui</span>
     <span id="health"></span>
     <a href="/docs">Docs</a>
+    <a href="#" id="diagLink">Diagnostics</a>
     <a href="https://github.com/pystardust/ani-cli" target="_blank" rel="noreferrer">ani-cli</a>
     <a class="star-link" href="https://github.com/rickwiththeportalgun/ani-gui" target="_blank" rel="noreferrer" title="If ani-gui is useful, drop a star ♡">★ Star on GitHub</a>
   </footer>
+</div>
+
+<div id="diagOverlay" class="overlay" style="display:none">
+  <div class="diag-panel">
+    <div class="diag-head">
+      <strong>Diagnostics</strong>
+      <button id="diagClose" class="x" title="Close">×</button>
+    </div>
+    <div id="diagBody"><div class="spin">Checking…</div></div>
+  </div>
 </div>
 
 <script>
@@ -536,6 +578,52 @@ function showBanner(html, warn) {
   b.className = "banner show" + (warn ? " warn" : "");
 }
 
+// Diagnostics overlay — reports tools, players, display, and likely problems.
+$("#diagLink").addEventListener("click", e => { e.preventDefault(); openDiagnostics(); });
+$("#diagClose").addEventListener("click", () => $("#diagOverlay").style.display = "none");
+$("#diagOverlay").addEventListener("click", e => {
+  if (e.target === $("#diagOverlay")) $("#diagOverlay").style.display = "none";
+});
+
+async function openDiagnostics() {
+  $("#diagOverlay").style.display = "flex";
+  $("#diagBody").innerHTML = `<div class="spin">Checking…</div>`;
+  let d;
+  try { d = await (await fetch("/api/diagnostics")).json(); }
+  catch (_) { $("#diagBody").innerHTML = `<div class="empty">Couldn't reach the server.</div>`; return; }
+
+  const row = (k, v, cls = "") => `<div class="diag-row"><span class="k">${escHtml(k)}</span><span class="v ${cls}">${escHtml(v)}</span></div>`;
+  const tool = t => t && t.found ? (t.version || t.path || "yes") : "not found";
+  const toolCls = t => t && t.found ? "yes" : "no";
+
+  let html = "";
+  if (d.problems && d.problems.length) {
+    html += d.problems.map(p => `<div class="diag-problem">⚠ ${escHtml(p)}</div>`).join("");
+  } else {
+    html += `<div class="diag-ok">✓ No problems detected — playback should work.</div>`;
+  }
+
+  html += row("Platform", d.platform || "");
+  html += row("Python", d.python || "");
+  html += row("ani-cli", tool(d.ani_cli), toolCls(d.ani_cli));
+  for (const p of ["mpv", "iina", "vlc"]) {
+    if (d.players && d.players[p]) html += row("player · " + p, tool(d.players[p]), toolCls(d.players[p]));
+  }
+  const disp = d.display || {};
+  const hasDisp = !!(disp.DISPLAY || disp.WAYLAND_DISPLAY);
+  if (/linux/i.test(d.platform || "")) {
+    html += row("display", hasDisp
+      ? (disp.DISPLAY || disp.WAYLAND_DISPLAY) + (disp.XDG_SESSION_TYPE ? ` (${disp.XDG_SESSION_TYPE})` : "")
+      : "none — player can't open a window", hasDisp ? "yes" : "no");
+    html += row("running as root", d.running_as_root ? "yes — run as your user" : "no", d.running_as_root ? "no" : "yes");
+  }
+  const tools = d.tools || {};
+  html += row("tools", Object.keys(tools).map(k => (tools[k] ? k : k + "✗")).join(", "));
+
+  html += `<div class="hint" style="margin-top:12px">Still stuck? Run <code>ani-cli -S 1 -e 1 "frieren"</code> in a terminal — if that doesn't play either, it's an ani-cli/stream issue, not ani-gui.</div>`;
+  $("#diagBody").innerHTML = html;
+}
+
 // "Install ani-cli" button inside the missing-binary banner.
 function wireInstallAniCli() {
   const btn = $("#installAniCli");
@@ -569,10 +657,14 @@ async function loadVersion() {
     $("#verInfo").textContent =
       `ani-gui ${v.ani_gui} · ani-cli ${c.installed || "not found"}`;
 
+    const deps = v.deps || {};
+    const onlyVlc = !deps.mpv && !deps.iina && deps.vlc;  // VLC is finicky w/ ani-cli
     if (!c.installed) {
       $("#health").innerHTML = `<span class="dot bad"></span>ani-cli missing`;
     } else if (!v.has_player) {
       $("#health").innerHTML = `<span class="dot bad"></span>no player found`;
+    } else if (onlyVlc) {
+      $("#health").innerHTML = `<span class="dot warn"></span>VLC only`;
     } else {
       $("#health").innerHTML = `<span class="dot ok"></span>ready`;
     }
@@ -583,7 +675,12 @@ async function loadVersion() {
         `<button id="installAniCli" class="banner-btn">Install ani-cli</button>`, true);
       wireInstallAniCli();
     } else if (!v.has_player) {
-      showBanner("<b>No video player found.</b> Install <code>mpv</code> or <code>iina</code> to watch.", true);
+      showBanner("<b>No video player found.</b> Install <code>mpv</code> (recommended) or IINA to watch.", true);
+    } else if (onlyVlc) {
+      showBanner("<b>Only VLC found.</b> ani-cli plays most reliably with " +
+        "<code>mpv</code> — VLC often opens then closes on these streams. " +
+        "Install mpv (e.g. <code>sudo pacman -S mpv</code> / " +
+        "<code>brew install mpv</code>) for smooth playback.", true);
     } else if (v.ani_gui_update) {
       const method = v.install_method || "";
       const cmd = method === "brew" ? "brew upgrade rickwiththeportalgun/tap/ani-gui"
@@ -813,7 +910,8 @@ async function doPlay(els, download) {
       })});
     const d = await r.json();
     if (d.ok) {
-      setStatus(status, d.stage === "slow" ? "work" : "ok", d.message);
+      const kind = d.stage === "no_display" ? "err" : d.stage === "slow" ? "work" : "ok";
+      setStatus(status, kind, d.message);
       // If this was a download, bust the downloads cache so the tab
       // picks up the new entry on next visit, and prepend it live if
       // the tab is already open.
@@ -950,7 +1048,7 @@ function renderContinue(items) {
           body: JSON.stringify({ id: it.id, title: it.title, ep: it.next_ep,
                                  mode: it.mode, player: state.player })});
         const d = await r.json();
-        if (d.ok) setStatus(status, d.stage === "slow" ? "work" : "ok", d.message);
+        if (d.ok) setStatus(status, d.stage === "no_display" ? "err" : d.stage === "slow" ? "work" : "ok", d.message);
         else setStatus(status, "err", d.error || "Playback failed.");
       } catch (err) {
         setStatus(status, "err", "Couldn't reach the server: " + err.message);

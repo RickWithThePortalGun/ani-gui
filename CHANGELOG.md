@@ -25,6 +25,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Source moved into the `ani_gui/` package; run from source with `./ani-gui`
   or `python3 -m ani_gui`.
 
+## [0.5.2] — 2026-06-21
+
+### Added
+- **Diagnostics panel** (footer link / `GET /api/diagnostics`) — reports ani-cli,
+  players (with versions), tools, graphical display, and root status, and lists
+  the likely reasons playback isn't opening (no display, running as root, VLC
+  only, missing player).
+
+### Fixed
+- When playback resolves but there's no X11/Wayland display (SSH, sudo, headless
+  service), ani-gui now says so instead of falsely claiming "Playing in mpv" —
+  the player can't open a window without a display.
+- The VLC success message warns that VLC may open-then-close on these streams
+  and points to mpv.
+
 ## [0.5.1] — 2026-06-21
 
 ### Fixed
@@ -87,7 +102,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Sub/Dub toggle, quality selection, and download support.
 - Endpoints: `GET /api/search`, `GET /api/episodes`, `POST /api/play`.
 
-[Unreleased]: https://github.com/rickwiththeportalgun/ani-gui/compare/v0.5.1...main
+[Unreleased]: https://github.com/rickwiththeportalgun/ani-gui/compare/v0.5.2...main
+[0.5.2]: https://github.com/rickwiththeportalgun/ani-gui/releases/tag/v0.5.2
 [0.5.1]: https://github.com/rickwiththeportalgun/ani-gui/releases/tag/v0.5.1
 [0.5.0]: https://github.com/rickwiththeportalgun/ani-gui/releases/tag/v0.5.0
 [0.4.0]: https://github.com/rickwiththeportalgun/ani-gui/releases/tag/v0.4.0

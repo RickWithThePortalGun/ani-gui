@@ -31,7 +31,7 @@ from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-VERSION = "0.5.1"
+VERSION = "0.5.2"
 ANI_CLI_RAW = "https://raw.githubusercontent.com/pystardust/ani-cli/master/ani-cli"
 
 # --- AllAnime API (mirrors the constants inside the ani-cli script) ----------
@@ -957,7 +957,7 @@ def play(query, nth, ep, quality, mode, download=False, player="default",
     if ddir:
         env["ANI_CLI_DOWNLOAD_DIR"] = ddir
 
-    plabel = "the downloader" if download else _player_label(player)
+    plabel = "the downloader" if download else ("VLC" if use_vlc else _player_label(player))
 
     # The download is recorded under the show's *canonical* name (what ani-cli
     # names the file after), falling back to the search query if we weren't
@@ -1053,10 +1053,23 @@ def play(query, nth, ep, quality, mode, download=False, player="default",
                          "Try another quality or result.",
                 "detail": detail}
 
+    # On Linux a missing X11/Wayland display means the player can't open a
+    # window even though the stream resolved fine — flag it instead of silently
+    # claiming success.
+    if _display_problem() == "no_display":
+        return {"ok": True, "stage": "no_display",
+                "message": f"Stream resolved, but no display is set "
+                           "($DISPLAY/$WAYLAND_DISPLAY are empty) so the player "
+                           "can't open a window. Start ani-gui from your desktop "
+                           "session (not SSH/sudo). See Diagnostics in the footer."}
+
     msg = f"Playing episode {ep} in {plabel}."
     if fell_back:
         msg = (f"Requested quality wasn't available — playing the best source "
                f"in {plabel}.")
+    if use_vlc:
+        msg += (" If VLC opens then closes, the stream didn't load in VLC — "
+                "install mpv for reliable playback.")
     return {"ok": True, "stage": "playing", "message": msg}
 
 
@@ -1178,6 +1191,81 @@ def version_info():
     }
 
 
+def _display_problem():
+    """On Linux, GUI players need an X11/Wayland display. If neither is in the
+    environment (SSH, sudo, a bare systemd unit), the player can't open a
+    window. macOS doesn't use DISPLAY, so this only applies to Linux."""
+    if sys.platform.startswith("linux"):
+        if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+            return "no_display"
+    return None
+
+
+def _tool_report(name):
+    p = shutil.which(name)
+    if not p:
+        return {"found": False}
+    ver = ""
+    try:
+        out = subprocess.run([name, "--version"], capture_output=True,
+                             text=True, timeout=8)
+        text = (out.stdout or out.stderr or "").strip()
+        ver = _strip_ansi(text.splitlines()[0]) if text else ""
+    except Exception:
+        pass
+    return {"found": True, "path": p, "version": ver[:120]}
+
+
+def diagnostics():
+    """A support report: tools, players, display, and likely problems.
+
+    Built to answer 'I clicked play and nothing happened' — it surfaces the
+    environment differences (no display, running as root, missing player) that
+    silently break ani-cli's detached player launch."""
+    import platform
+    problems = []
+
+    players = {n: _tool_report(n) for n in ("mpv", "iina", "vlc")}
+    has_good = players["mpv"]["found"] or players["iina"]["found"]
+    has_any = has_good or players["vlc"]["found"]
+
+    disp = {
+        "DISPLAY": os.environ.get("DISPLAY", ""),
+        "WAYLAND_DISPLAY": os.environ.get("WAYLAND_DISPLAY", ""),
+        "XDG_SESSION_TYPE": os.environ.get("XDG_SESSION_TYPE", ""),
+    }
+    as_root = (os.geteuid() == 0) if hasattr(os, "geteuid") else False
+
+    if not ani_cli_path():
+        problems.append("ani-cli isn't installed or isn't on PATH.")
+    if not has_any:
+        problems.append("No video player found — install mpv.")
+    elif not has_good:
+        problems.append("Only VLC is installed. ani-cli plays most reliably "
+                        "with mpv (VLC often opens then closes). Install mpv.")
+    if _display_problem() == "no_display":
+        problems.append("No graphical display ($DISPLAY/$WAYLAND_DISPLAY are "
+                        "empty) — the player can't open a window. Launch ani-gui "
+                        "from your desktop session, not over SSH.")
+    if as_root:
+        problems.append("ani-gui is running as root — the player may not reach "
+                        "your display. Run it as your normal user.")
+
+    return {
+        "platform": platform.platform(),
+        "python": sys.version.split()[0],
+        "ani_cli": _tool_report("ani-cli"),
+        "players": players,
+        "tools": {n: bool(shutil.which(n))
+                  for n in ("curl", "ffmpeg", "aria2c", "yt-dlp", "fzf",
+                            "openssl")},
+        "display": disp,
+        "running_as_root": as_root,
+        "problems": problems,
+        "ok": not problems,
+    }
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):  # quiet
         pass
@@ -1288,6 +1376,8 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(500, {"error": str(e)})
             if u.path == "/api/version":
                 return self._send(200, version_info())
+            if u.path == "/api/diagnostics":
+                return self._send(200, diagnostics())
             if u.path == "/api/cover":
                 path = (q.get("path", [""])[0])
                 title = (q.get("title", [""])[0])
