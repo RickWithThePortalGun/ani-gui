@@ -31,7 +31,7 @@ from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-VERSION = "0.5.4"
+VERSION = "0.5.5"
 ANI_CLI_RAW = "https://raw.githubusercontent.com/pystardust/ani-cli/master/ani-cli"
 
 # --- AllAnime API (mirrors the constants inside the ani-cli script) ----------
@@ -601,7 +601,15 @@ def _downloads_with_status():
             else:
                 d["status"] = "done" if live["returncode"] == 0 else "failed"
             if d["status"] == "failed" and live.get("error_detail"):
-                d["error"] = live["error_detail"]
+                det = live["error_detail"]
+                low = det.lower()
+                if "403" in det or "forbidden" in low or "not successful" in low:
+                    # AllAnime CDN auth tokens expire within seconds/minutes, so
+                    # a slow-to-start download often 403s. A fresh Retry usually
+                    # works because it re-resolves a new link.
+                    d["error"] = "Source link expired (403) — hit Retry for a fresh one."
+                else:
+                    d["error"] = det
             continue
 
         # No live state — fall back to pid liveness + file presence.
@@ -917,7 +925,8 @@ def _ani_cli_error_detail(out, limit=240):
     a generic 'couldn't resolve a stream'."""
     lines = [ln.strip() for ln in _strip_ansi(out).splitlines() if ln.strip()]
     keywords = ("not found", "please install", "no valid", "not released",
-                "connection error", "invalid", "error", "failed", "no such")
+                "connection error", "invalid", "error", "failed", "no such",
+                "403", "forbidden", "not successful", "status=")
     pick = ""
     for ln in reversed(lines):
         low = ln.lower()
@@ -929,6 +938,97 @@ def _ani_cli_error_detail(out, limit=240):
         pick = next((ln for ln in reversed(lines)
                      if "links fetched" not in ln.lower()), "")
     return pick[:limit]
+
+
+_PLAYER_NAMES = ("mpv", "vlc", "iina")
+
+
+def _await_play_outcome(proc, timeout=90):
+    """Read ani-cli's output until the playback outcome is known.
+
+    Returns ``(outcome, output)`` where outcome is one of:
+      ``playing``      — a player was launched (success)
+      ``no_source``    — released but no working source
+      ``not_released`` — episode isn't out yet
+      ``exited``       — ani-cli exited before any marker (inspect returncode)
+      ``timeout``      — nothing decisive within the deadline
+
+    Crucially we stop at the "Playing episode" marker instead of waiting for
+    ani-cli to exit — its post-play fzf menu blocks forever under a non-tty
+    stdin, and waiting would make us time out and kill the player with it."""
+    import select
+    streams = [proc.stdout, proc.stderr]
+    out = ""
+    deadline = time.time() + timeout
+    while streams and time.time() < deadline:
+        ready, _, _ = select.select(streams, [], [], 1.0)
+        for s in ready:
+            try:
+                chunk = os.read(s.fileno(), 4096)
+            except OSError:
+                chunk = b""
+            if not chunk:
+                streams.remove(s)
+                continue
+            out += chunk.decode("utf-8", "replace")
+        low = out.lower()
+        if "episode not released" in low:
+            return "not_released", out
+        if "no valid sources" in low or "episode is released, but no" in low:
+            return "no_source", out
+        if "playing episode" in low:
+            return "playing", out
+    return ("exited" if not streams else "timeout"), out
+
+
+def _kill_group(proc):
+    """Kill ani-cli's whole process group (used for failures — no player to
+    spare)."""
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+    except (OSError, ProcessLookupError):
+        pass
+    try:
+        proc.wait(timeout=5)
+    except Exception:
+        pass
+
+
+def _reap_except_player(proc):
+    """After a successful play, stop ani-cli and its blocked post-play fzf menu
+    while leaving the detached player (mpv/vlc/iina) running.
+
+    ani-cli launches the player via ``nohup … &`` in its own process group, so a
+    plain killpg would take the player down too. Instead we enumerate the group
+    and SIGTERM every member that isn't a player."""
+    time.sleep(2.0)  # let the player fully start before we clean up
+    try:
+        pgid = os.getpgid(proc.pid)
+    except (OSError, ProcessLookupError):
+        return
+    try:
+        listing = subprocess.run(["ps", "-e", "-o", "pid=,pgid=,comm="],
+                                 capture_output=True, text=True, timeout=5).stdout
+    except Exception:
+        listing = ""
+    for line in listing.splitlines():
+        parts = line.split(None, 2)
+        if len(parts) < 3:
+            continue
+        pid_s, pgid_s, comm = parts
+        if pgid_s != str(pgid):
+            continue
+        base = os.path.basename(comm.strip()).lower()
+        if any(p in base for p in _PLAYER_NAMES):
+            continue  # spare the player
+        try:
+            os.kill(int(pid_s), signal.SIGTERM)
+        except (OSError, ValueError, ProcessLookupError):
+            pass
+    try:
+        proc.wait(timeout=5)
+    except Exception:
+        pass
 
 
 def play(query, nth, ep, quality, mode, download=False, player="default",
@@ -972,6 +1072,15 @@ def play(query, nth, ep, quality, mode, download=False, player="default",
     ddir = _download_dir()
     if ddir:
         env["ANI_CLI_DOWNLOAD_DIR"] = ddir
+
+    # Disable ani-cli's interactive post-play menu. We always pass -S/-e, so no
+    # menu is needed; left enabled, ani-cli drops into an fzf menu after playing
+    # that blocks forever on our non-tty stdin (then we'd time out and kill the
+    # player). Setting this to a non-menu value makes `launcher` a no-op, so the
+    # menu returns empty and ani-cli cleanly `exit 0`s after launching the
+    # player. (The _reap_except_player reaper below is the fallback for builds
+    # that ignore this.)
+    env["ANI_CLI_EXTERNAL_MENU"] = "off"
 
     # Wayland workaround: if the player's native Wayland output is broken (a
     # common GPU/driver issue — mpv gets the stream but never opens a window),
@@ -1028,39 +1137,46 @@ def play(query, nth, ep, quality, mode, download=False, player="default",
                 "message": f"Downloading episode {ep} in the background "
                            "(saved to ani-cli's download dir)."}
 
-    # Playback: ani-cli launches the player detached, then exits — so we can
-    # capture its output to learn whether a source was found. We run it in its
-    # own session so that if it hangs (a dead provider with no curl timeout),
-    # we can kill the *whole group* — otherwise its background link-resolution
-    # subshells leak as orphaned processes.
+    # Playback. ani-cli resolves the stream, launches the player detached, then
+    # drops into an interactive post-play fzf menu — which blocks forever under
+    # our non-tty stdin. So rather than wait for ani-cli to exit (it won't), we
+    # read its output until the player is launched, then reap ani-cli and its
+    # menu *without* killing the now-running player.
     proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             text=True, env=env, start_new_session=True)
-    try:
-        out_s, err_s = proc.communicate(timeout=90)
-        out = (out_s or "") + "\n" + (err_s or "")
-    except subprocess.TimeoutExpired:
+
+    if os.name == "posix":
+        outcome, out = _await_play_outcome(proc, timeout=90)
+    else:
+        # Windows fallback: no select-on-pipes / process groups.
         try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-        except (OSError, ProcessLookupError):
-            pass
-        proc.wait()
+            out_s, err_s = proc.communicate(timeout=90)
+            out = (out_s or "") + "\n" + (err_s or "")
+            outcome = "exited"
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            outcome, out = "timeout", ""
+
+    low = out.lower()
+    if outcome == "not_released":
+        _kill_group(proc)
+        return {"ok": False, "stage": "not_released",
+                "error": "That episode isn't released yet."}
+    if outcome == "no_source":
+        _kill_group(proc)
+        return {"ok": False, "stage": "no_source",
+                "error": "No working source for this episode. "
+                         "Try a different quality, language, or result."}
+    if outcome == "timeout":
+        _kill_group(proc)
         return {"ok": False, "stage": "slow",
                 "error": "This source is taking too long to resolve. "
                          "Try another quality or result."}
 
-    low = out.lower()
-    if "episode not released" in low:
-        return {"ok": False, "stage": "not_released",
-                "error": "That episode isn't released yet."}
-    if "no valid sources" in low or "episode is released, but no" in low:
-        return {"ok": False, "stage": "no_source",
-                "error": "No working source for this episode. "
-                         "Try a different quality, language, or result."}
-
-    fell_back = "specified quality not found" in low
-    fetched = "links fetched" in low
-    if not fetched and proc.returncode != 0:
+    if outcome == "exited" and "playing episode" not in low:
+        # ani-cli exited without launching a player → it failed.
         detail = _ani_cli_error_detail(out)
         # Most common real cause on a fresh box: ani-cli is missing one of its
         # own dependencies (a player, fzf, openssl, …). Make that actionable.
@@ -1071,12 +1187,21 @@ def play(query, nth, ep, quality, mode, download=False, player="default",
                              "installed. Install it with your package manager, "
                              "then try again.",
                     "detail": detail}
-        return {"ok": False, "stage": "failed",
-                "error": ("ani-cli couldn't resolve a stream — " + detail)
-                         if detail else
-                         "ani-cli couldn't resolve a stream. "
-                         "Try another quality or result.",
-                "detail": detail}
+        if proc.returncode not in (0, None):
+            return {"ok": False, "stage": "failed",
+                    "error": ("ani-cli couldn't resolve a stream — " + detail)
+                             if detail else
+                             "ani-cli couldn't resolve a stream. "
+                             "Try another quality or result.",
+                    "detail": detail}
+
+    fell_back = "specified quality not found" in low
+    if outcome == "playing":
+        # Player launched. Reap ani-cli + its blocked fzf menu in the
+        # background, sparing the player — otherwise it leaks (and a killpg
+        # would take the player down with it).
+        threading.Thread(target=_reap_except_player, args=(proc,),
+                         daemon=True).start()
 
     # On Linux a missing X11/Wayland display means the player can't open a
     # window even though the stream resolved fine — flag it instead of silently
@@ -1636,6 +1761,25 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(500, {"error": str(e)})
 
 
+def _open_browser(url):
+    """Open the default browser without its stderr (Chromium/Wayland/GCM
+    warnings) spilling into ani-gui's terminal and confusing people."""
+    opener = None
+    if sys.platform == "darwin":
+        opener = shutil.which("open")
+    elif os.name == "posix":
+        opener = shutil.which("xdg-open")
+    if opener:
+        try:
+            subprocess.Popen([opener, url], stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             start_new_session=True)
+            return
+        except Exception:
+            pass
+    webbrowser.open(url)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="ani-gui",
                                  description="Local web UI for ani-cli.")
@@ -1664,7 +1808,7 @@ def main(argv=None):
     url = f"http://{args.host}:{args.port}"
     print(f"ani-gui {VERSION} running at {url}  (Ctrl-C to stop)")
     if not args.no_browser:
-        threading.Timer(0.6, lambda: webbrowser.open(url)).start()
+        threading.Timer(0.6, lambda: _open_browser(url)).start()
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

@@ -25,6 +25,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Source moved into the `ani_gui/` package; run from source with `./ani-gui`
   or `python3 -m ani_gui`.
 
+## [0.5.5] — 2026-06-21
+
+### Fixed
+- **Playback no longer gets killed by ani-cli's post-play menu.** ani-cli drops
+  into an interactive `fzf` menu after launching the player, which blocks
+  forever under our non-tty stdin — ani-gui then timed out at 90s and killpg'd
+  the whole group, taking the player with it. Now ani-gui (a) runs ani-cli with
+  `ANI_CLI_EXTERNAL_MENU` disabled so it cleanly exits after launching the
+  player, (b) returns as soon as the player launches (~40s, not 90s) instead of
+  waiting, and (c) reaps the leftover ani-cli/fzf processes while **sparing the
+  player** as a fallback. Also fixes the leaked-process pile this caused.
+- Failed downloads that hit an expired CDN token now say "Source link expired
+  (403) — hit Retry for a fresh one" (these tokens expire in seconds/minutes;
+  Retry re-resolves a working link).
+- The auto-opened browser is now launched detached (via `xdg-open`/`open` with
+  output to /dev/null), so its own startup noise (Chromium/Ozone-Wayland/GCM
+  warnings) no longer spills into ani-gui's terminal and looks like ani-gui
+  errors.
+- Diagnostics shows the full Wayland environment (`WAYLAND_DISPLAY`, `DISPLAY`,
+  `XDG_RUNTIME_DIR`, session) and flags a missing `XDG_RUNTIME_DIR`.
+
 ## [0.5.4] — 2026-06-21
 
 ### Added
@@ -123,7 +144,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Sub/Dub toggle, quality selection, and download support.
 - Endpoints: `GET /api/search`, `GET /api/episodes`, `POST /api/play`.
 
-[Unreleased]: https://github.com/rickwiththeportalgun/ani-gui/compare/v0.5.4...main
+[Unreleased]: https://github.com/rickwiththeportalgun/ani-gui/compare/v0.5.5...main
+[0.5.5]: https://github.com/rickwiththeportalgun/ani-gui/releases/tag/v0.5.5
 [0.5.4]: https://github.com/rickwiththeportalgun/ani-gui/releases/tag/v0.5.4
 [0.5.3]: https://github.com/rickwiththeportalgun/ani-gui/releases/tag/v0.5.3
 [0.5.2]: https://github.com/rickwiththeportalgun/ani-gui/releases/tag/v0.5.2
