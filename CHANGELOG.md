@@ -25,7 +25,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Source moved into the `ani_gui/` package; run from source with `./ani-gui`
   or `python3 -m ani_gui`.
 
-## [Unreleased]
+## [0.5.0] — 2026-06-21
+
+### Added
+- **Auto-install ani-cli** — ani-gui sets up its own dependency now. The
+  Homebrew formula `depends_on "ani-cli"`, a one-line `install.sh` bootstraps
+  everything, and pip/pipx users get `ani-gui --install-ani-cli` plus an
+  **Install ani-cli** button in the missing-binary banner (`POST
+  /api/install-ani-cli`, no sudo — drops the script into a writable PATH dir or
+  uses Homebrew).
+- **Watch progress in the episode grid** — episodes you've already seen are
+  dimmed with a ✓, and the next unwatched episode is auto-selected and scrolled
+  into view (`GET /api/episodes` now returns `watched`).
+- **Jump-to-episode filter** and a scrollable grid for long-running series, so
+  shows with hundreds of episodes stay usable.
+- **Download range** — pick an episode span (e.g. 5–12) instead of all-or-nothing.
+- **Desktop notifications** when a background download finishes, with a watcher
+  that keeps polling even after you leave the Downloads tab.
+- **Remembered preferences** — sub/dub, player, quality, and last tab persist
+  across reloads (localStorage).
+- **Keyboard shortcuts** — `/` focuses search, `Esc` collapses the open result
+  or clears the search box.
+- **Retry failed downloads** — failed episodes get a one-click Retry, and a
+  series accordion shows a "Retry failed (N)" button for the common case where
+  a few episodes flake out during a bulk download. Download records now store
+  the query / search position / show id so a retry re-issues the exact episode
+  (`POST /api/retry-download`).
+
+### Changed
+- Recommendations are far faster: parallelized AniList + AllAnime lookups and a
+  cached result (was 10-20s sequential, now a few seconds and instant when warm).
 
 ## [0.2.0]
 
@@ -47,7 +76,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Sub/Dub toggle, quality selection, and download support.
 - Endpoints: `GET /api/search`, `GET /api/episodes`, `POST /api/play`.
 
-[Unreleased]: https://github.com/rickwiththeportalgun/ani-gui/compare/v0.4.0...main
+[Unreleased]: https://github.com/rickwiththeportalgun/ani-gui/compare/v0.5.0...main
+[0.5.0]: https://github.com/rickwiththeportalgun/ani-gui/releases/tag/v0.5.0
 [0.4.0]: https://github.com/rickwiththeportalgun/ani-gui/releases/tag/v0.4.0
 [0.2.0]: https://github.com/rickwiththeportalgun/ani-gui
 [0.1.0]: https://github.com/rickwiththeportalgun/ani-gui

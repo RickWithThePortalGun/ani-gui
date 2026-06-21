@@ -31,7 +31,7 @@ from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-VERSION = "0.4.1"
+VERSION = "0.5.0"
 ANI_CLI_RAW = "https://raw.githubusercontent.com/pystardust/ani-cli/master/ani-cli"
 
 # --- AllAnime API (mirrors the constants inside the ani-cli script) ----------
@@ -151,6 +151,37 @@ def cancel_download(dl_id):
         cur["cancelled"] = True
     _finish_progress(dl_id, -1)
     return {"ok": True}
+
+
+def retry_download(dl_id):
+    """Re-issue a failed/cancelled download from its stored record.
+
+    Re-resolves the show's search position from the saved id where possible
+    (search ordering can drift over time), falling back to the saved nth, then
+    to the top result for the query."""
+    rec = next((d for d in _read_downloads() if d.get("id") == dl_id), None)
+    if not rec:
+        return {"ok": False, "error": "download not found"}
+
+    mode = rec.get("mode", "sub")
+    title = rec.get("title", "")
+    query = rec.get("query") or clean_title(title)
+    show_id = rec.get("show_id", "")
+    ep = rec.get("ep")
+
+    nth = find_nth(query, mode, show_id) if show_id else None
+    if nth is None:
+        nth = rec.get("nth")
+    if nth is None:
+        results = search_anime(query, mode)
+        nth = results[0]["nth"] if results else None
+    if nth is None:
+        return {"ok": False,
+                "error": "Couldn't locate this show to retry — try from Search."}
+
+    return play(query=query, nth=nth, ep=ep, quality=rec.get("quality", "best"),
+                mode=mode, download=True, title=title,
+                thumbnail=rec.get("thumbnail", ""), show_id=show_id)
 
 
 def _parse_progress_line(line):
@@ -365,6 +396,14 @@ def episodes_list(show_id, mode):
     return sorted(detail.get(mode, []) or [], key=_ep_key)
 
 
+def watched_episode(show_id):
+    """The last episode watched for *show_id* per ani-cli's history, or None."""
+    for h in read_history():
+        if h["id"] == show_id:
+            return h["ep"]
+    return None
+
+
 def find_nth(query, mode, show_id):
     """Return the 1-based position of show_id in a search for `query`,
     matching how `ani-cli -S <n>` numbers results. None if not found."""
@@ -409,8 +448,12 @@ def _write_downloads(items):
             json.dump(items, f, indent=2)
 
 
-def _record_download(title, ep, quality, mode, pid=None, thumbnail="", dl_id=None):
-    """Add a download entry and persist immediately."""
+def _record_download(title, ep, quality, mode, pid=None, thumbnail="", dl_id=None,
+                     query="", nth=None, show_id=""):
+    """Add a download entry and persist immediately.
+
+    Stores enough to re-issue the exact same download later (query / search
+    position / show id), so a failed episode can be retried in one click."""
     items = _read_downloads()
     # Remove any older entry for the same title+ep (duplicate).
     items = [d for d in items
@@ -425,6 +468,9 @@ def _record_download(title, ep, quality, mode, pid=None, thumbnail="", dl_id=Non
         "time": time.strftime("%Y-%m-%d %H:%M"),
         "dir": _download_dir(),
         "pid": pid,
+        "query": query,
+        "nth": nth,
+        "show_id": show_id,
     })
     # Keep at most 50 entries.
     _write_downloads(items[:50])
@@ -760,9 +806,69 @@ def continue_watching(mode):
 
 
 def ani_cli_path():
-    return (shutil.which("ani-cli")
-            or ("/opt/homebrew/bin/ani-cli"
-                if os.path.exists("/opt/homebrew/bin/ani-cli") else None))
+    found = shutil.which("ani-cli")
+    if found:
+        return found
+    # Common locations that may not be on the server's PATH (incl. the dir we
+    # install ani-cli into ourselves, ~/.local/bin).
+    for cand in ("/opt/homebrew/bin/ani-cli", "/usr/local/bin/ani-cli",
+                 os.path.expanduser("~/.local/bin/ani-cli")):
+        if os.path.exists(cand):
+            return cand
+    return None
+
+
+def install_ani_cli():
+    """Install ani-cli if it's missing, without sudo.
+
+    Prefers Homebrew when available (so it stays brew-updatable); otherwise
+    downloads the upstream script into a user-writable bin directory and marks
+    it executable — the same thing ani-cli's own README tells you to do."""
+    existing = ani_cli_path()
+    if existing:
+        return {"ok": True, "already": True, "path": existing,
+                "message": "ani-cli is already installed."}
+
+    # Homebrew route — clean and updatable.
+    brew = shutil.which("brew")
+    if brew:
+        try:
+            subprocess.run([brew, "install", "ani-cli"], check=True,
+                           capture_output=True, text=True, timeout=900)
+            p = ani_cli_path() or shutil.which("ani-cli")
+            return {"ok": True, "path": p,
+                    "message": "Installed ani-cli with Homebrew."}
+        except Exception:
+            pass  # fall through to the script download
+
+    # No-sudo script install into a user-writable bin dir (prefer ~/.local/bin,
+    # which pipx already puts on PATH).
+    local_bin = os.path.expanduser("~/.local/bin")
+    path_dirs = os.environ.get("PATH", "").split(os.pathsep)
+    if os.path.isdir(local_bin) and os.access(local_bin, os.W_OK):
+        target_dir = local_bin
+    else:
+        writable = [d for d in path_dirs
+                    if d and os.path.isdir(d) and os.access(d, os.W_OK)]
+        target_dir = writable[0] if writable else local_bin
+    try:
+        os.makedirs(target_dir, exist_ok=True)
+        req = urllib.request.Request(ANI_CLI_RAW, headers={"User-Agent": AGENT})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            data = r.read()
+        target = os.path.join(target_dir, "ani-cli")
+        with open(target, "wb") as f:
+            f.write(data)
+        os.chmod(target, 0o755)
+    except Exception as e:
+        return {"ok": False, "error": f"Couldn't install ani-cli: {e}"}
+
+    on_path = target_dir in path_dirs
+    msg = f"Installed ani-cli to {target}."
+    if not on_path:
+        msg += (f" Add {target_dir} to your PATH "
+                "(e.g. `pipx ensurepath`) and restart ani-gui.")
+    return {"ok": True, "path": target, "on_path": on_path, "message": msg}
 
 
 PLAYER_LABELS = {"default": "your player", "vlc": "VLC"}
@@ -780,7 +886,7 @@ def _player_label(player):
 
 
 def play(query, nth, ep, quality, mode, download=False, player="default",
-         thumbnail="", title=""):
+         thumbnail="", title="", show_id=""):
     """Run ani-cli for one episode.
 
     For playback we capture ani-cli's output and wait briefly so we can report
@@ -807,7 +913,8 @@ def play(query, nth, ep, quality, mode, download=False, player="default",
     # locations; on Windows ani-cli runs under a shell that has its own PATH,
     # so we leave it untouched there.
     if os.name == "posix":
-        extra = os.pathsep.join(["/opt/homebrew/bin", "/usr/local/bin"])
+        extra = os.pathsep.join(["/opt/homebrew/bin", "/usr/local/bin",
+                                 os.path.expanduser("~/.local/bin")])
         env["PATH"] = extra + os.pathsep + env.get("PATH", "")
     # Use the configured download directory for ani-cli.
     ddir = _download_dir()
@@ -844,7 +951,8 @@ def play(query, nth, ep, quality, mode, download=False, player="default",
                                     env=env, start_new_session=True)
             os.close(slave)
             _record_download(rec_title, ep, quality, mode, pid=proc.pid,
-                             thumbnail=thumbnail, dl_id=dl_id)
+                             thumbnail=thumbnail, dl_id=dl_id,
+                             query=query, nth=nth, show_id=show_id)
             threading.Thread(target=_watch_download,
                              args=(dl_id, master, proc), daemon=True).start()
         else:
@@ -853,7 +961,8 @@ def play(query, nth, ep, quality, mode, download=False, player="default",
                                     stderr=subprocess.DEVNULL,
                                     env=env, start_new_session=True)
             _record_download(rec_title, ep, quality, mode, pid=proc.pid,
-                             thumbnail=thumbnail, dl_id=dl_id)
+                             thumbnail=thumbnail, dl_id=dl_id,
+                             query=query, nth=nth, show_id=show_id)
         return {"ok": True, "stage": "download", "id": dl_id,
                 "message": f"Downloading episode {ep} in the background "
                            "(saved to ani-cli's download dir)."}
@@ -1064,7 +1173,8 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/api/episodes":
                 sid = q.get("id", [""])[0]
                 mode = q.get("mode", ["sub"])[0]
-                return self._send(200, {"episodes": episodes_list(sid, mode)})
+                return self._send(200, {"episodes": episodes_list(sid, mode),
+                                        "watched": watched_episode(sid)})
             if u.path == "/api/continue":
                 mode = q.get("mode", ["sub"])[0]
                 return self._send(200, {"items": continue_watching(mode)})
@@ -1178,11 +1288,18 @@ class Handler(BaseHTTPRequestHandler):
                     player=body.get("player", "default"),
                     download=bool(body.get("download")),
                     thumbnail=body.get("thumbnail", ""),
-                    title=body.get("title", ""))
+                    title=body.get("title", ""),
+                    show_id=body.get("id", ""))
                 return self._send(200 if res.get("ok") else 502, res)
             if u.path == "/api/cancel-download":
                 res = cancel_download(body.get("id", ""))
                 return self._send(200 if res.get("ok") else 404, res)
+            if u.path == "/api/retry-download":
+                res = retry_download(body.get("id", ""))
+                return self._send(200 if res.get("ok") else 502, res)
+            if u.path == "/api/install-ani-cli":
+                res = install_ani_cli()
+                return self._send(200 if res.get("ok") else 500, res)
             if u.path == "/api/resume":
                 # Resolve the show's search position by id, then play.
                 mode = body.get("mode", "sub")
@@ -1251,11 +1368,21 @@ def main(argv=None):
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--no-browser", action="store_true",
                     help="don't open the browser automatically")
+    ap.add_argument("--install-ani-cli", action="store_true",
+                    help="install ani-cli (if missing) and exit")
     ap.add_argument("-V", "--version", action="version",
                     version=f"ani-gui {VERSION}")
     args = ap.parse_args(argv)
+
+    if args.install_ani_cli:
+        res = install_ani_cli()
+        print(res.get("message") or res.get("error"),
+              file=sys.stderr if not res.get("ok") else sys.stdout)
+        return 0 if res.get("ok") else 1
+
     if not ani_cli_path():
-        print("warning: ani-cli not found on PATH — playback will fail",
+        print("warning: ani-cli not found on PATH — run `ani-gui --install-ani-cli` "
+              "or install it from https://github.com/pystardust/ani-cli",
               file=sys.stderr)
     srv = ThreadingHTTPServer((args.host, args.port), Handler)
     url = f"http://{args.host}:{args.port}"

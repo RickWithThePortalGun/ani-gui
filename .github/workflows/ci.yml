@@ -23,7 +23,7 @@ jobs:
           pip install ruff
           ruff check .
 
-      - name: ShellCheck launcher
+      - name: ShellCheck scripts
         uses: ludeeus/action-shellcheck@master
         with:
-          additional_files: ani-gui
+          additional_files: ani-gui install.sh

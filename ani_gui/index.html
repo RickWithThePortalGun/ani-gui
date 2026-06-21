@@ -102,6 +102,10 @@
   .panel .sub { color: var(--muted); font-size: 12px; margin-bottom: 14px; }
 
   .eps { display: flex; flex-wrap: wrap; gap: 6px; }
+  .eps.scroll {
+    max-height: 232px; overflow-y: auto; padding: 4px;
+    border: 1px solid var(--border); border-radius: 6px;
+  }
   .ep {
     min-width: 40px; text-align: center; padding: 7px 9px;
     background: var(--surface-2); border: 1px solid var(--border);
@@ -109,8 +113,20 @@
   }
   .ep:hover { border-color: var(--border-strong); }
   .ep.sel { background: var(--accent); color: #06231d; border-color: var(--accent); font-weight: 600; }
+  .ep.watched { color: var(--faint); }
+  .ep.watched::after { content: " ✓"; color: var(--accent); font-size: 10px; }
+  .ep.hide { display: none; }
 
-  .actions { display: flex; align-items: center; gap: 10px; margin-top: 16px; }
+  .ep-tools { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+  .ep-tools input { padding: 6px 9px; font-size: 12px; border-radius: 6px;
+    background: var(--surface); color: var(--text); border: 1px solid var(--border); outline: none; }
+  .ep-tools input:focus { border-color: var(--border-strong); }
+  .ep-jump { width: 120px; }
+  .ep-count { color: var(--faint); font-size: 12px; }
+  .ep-range { display: flex; align-items: center; gap: 5px; color: var(--muted); font-size: 12px; }
+  .ep-range input { width: 58px; }
+
+  .actions { display: flex; align-items: center; gap: 10px; margin-top: 16px; flex-wrap: wrap; }
   .status { color: var(--muted); font-size: 12px; min-height: 16px; margin-top: 12px; }
   .status.err { color: #ff7a7a; }
   .status.ok { color: var(--accent); }
@@ -133,6 +149,13 @@
     margin-left: auto; color: var(--faint); cursor: pointer;
     border: none; background: none; padding: 0 2px; font-size: 15px;
   }
+  .banner-btn {
+    margin-left: 6px; font-size: 12px; padding: 4px 10px; border-radius: 6px;
+    background: var(--accent); color: #06231d; border: 1px solid var(--accent);
+    font-weight: 600; cursor: pointer;
+  }
+  .banner-btn:hover { filter: brightness(1.06); }
+  .banner-btn:disabled { opacity: .6; cursor: default; }
   footer {
     margin-top: 40px; padding-top: 14px; border-top: 1px solid var(--border);
     display: flex; gap: 14px; flex-wrap: wrap; align-items: center;
@@ -140,9 +163,27 @@
   }
   footer a { color: var(--muted); text-decoration: none; }
   footer a:hover { color: var(--text); }
+  footer .star-link { margin-left: auto; color: #e0b341; }
+  footer .star-link:hover { color: #f3c95a; }
   .dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; vertical-align: middle; margin-right: 5px; }
   .dot.ok { background: var(--accent); }
   .dot.bad { background: #c46; }
+
+  /* Easter egg — Konami code rains a few petals + shows a toast. */
+  .petal {
+    position: fixed; top: -40px; z-index: 9999; pointer-events: none;
+    will-change: transform; animation: petal-fall linear forwards;
+  }
+  @keyframes petal-fall {
+    to { transform: translateY(106vh) rotate(540deg); opacity: 0; }
+  }
+  .toast {
+    position: fixed; left: 50%; bottom: 30px; transform: translateX(-50%) translateY(8px);
+    z-index: 10000; background: var(--surface); color: var(--text);
+    border: 1px solid var(--border-strong); border-radius: 8px;
+    padding: 10px 16px; font-size: 13px; opacity: 0; transition: opacity .25s, transform .25s;
+  }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 
   .prog-bar { height: 3px; background: var(--border); border-radius: 2px; margin-top: 5px; overflow: hidden; }
   .prog-bar .fill {
@@ -167,6 +208,19 @@
     background: var(--surface-2); color: var(--muted); cursor: pointer;
   }
   .dl-cancel:hover { border-color: #ff7a7a; color: #ff7a7a; }
+  .dl-retry {
+    font-size: 11px; padding: 4px 9px; margin-top: 6px;
+    border: 1px solid var(--accent); border-radius: 6px;
+    background: none; color: var(--accent); cursor: pointer;
+  }
+  .dl-retry:hover { background: var(--accent); color: #06231d; }
+  .dl-retry:disabled { opacity: .6; cursor: default; }
+  .dl-group-retry {
+    margin-top: 4px; font-size: 11px; padding: 3px 8px;
+    border: 1px solid var(--accent); border-radius: 6px;
+    background: none; color: var(--accent); cursor: pointer;
+  }
+  .dl-group-retry:hover { background: var(--accent); color: #06231d; }
 
   /* Downloads grouped by series into a collapsible accordion. */
   .dl-group {
@@ -296,22 +350,72 @@
     <span id="health"></span>
     <a href="/docs">Docs</a>
     <a href="https://github.com/pystardust/ani-cli" target="_blank" rel="noreferrer">ani-cli</a>
+    <a class="star-link" href="https://github.com/rickwiththeportalgun/ani-gui" target="_blank" rel="noreferrer" title="If ani-gui is useful, drop a star ♡">★ Star on GitHub</a>
   </footer>
 </div>
 
 <script>
 const $ = s => document.querySelector(s);
-const state = { mode: "sub", player: "default", selected: null, ep: null };
+
+// Persisted preferences (sub/dub, player, quality, last tab) — restored on load.
+const prefs = (() => {
+  try { return JSON.parse(localStorage.getItem("ani-gui-prefs") || "{}"); }
+  catch (_) { return {}; }
+})();
+function savePref(k, v) {
+  prefs[k] = v;
+  try { localStorage.setItem("ani-gui-prefs", JSON.stringify(prefs)); } catch (_) {}
+}
+
+const state = { mode: prefs.mode || "sub", player: prefs.player || "default", selected: null, ep: null };
+
+// --- Desktop notifications when a background download finishes -------------
+function notifyAsk() {
+  try {
+    if ("Notification" in window && Notification.permission === "default")
+      Notification.requestPermission().catch(() => {});
+  } catch (_) {}
+}
+function notify(title, body) {
+  try {
+    if ("Notification" in window && Notification.permission === "granted")
+      new Notification(title, { body, icon: "/favicon.ico", silent: false });
+  } catch (_) {}
+}
+const _dlPrev = {};
+function checkDownloadNotifications(items) {
+  for (const d of items || []) {
+    const key = d.id || (d.title + "||" + d.ep);
+    const prev = _dlPrev[key];
+    if ((prev === "downloading" || prev === "stalled") && d.status === "done")
+      notify("Download complete", `${d.title} — ep ${d.ep}`);
+    _dlPrev[key] = d.status;
+  }
+}
+// Poll in the background (independent of the Downloads tab) while anything is
+// downloading, so a completion notification fires even if you've navigated away.
+let _dlWatch = null;
+function ensureDownloadWatcher() {
+  if (_dlWatch) return;
+  const tick = async () => {
+    _dlWatch = null;
+    try {
+      const d = await (await fetch("/api/downloads")).json();
+      checkDownloadNotifications(d.items);
+      if ((d.items || []).some(i => i.status === "downloading" || i.status === "stalled"))
+        _dlWatch = setTimeout(tick, 4000);
+    } catch (_) { _dlWatch = setTimeout(tick, 8000); }
+  };
+  _dlWatch = setTimeout(tick, 4000);
+}
 
 const coverImg = (src, cls="cover") =>
   src ? `<img class="${cls}" src="${src}" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.visibility='hidden'">`
       : `<span class="${cls}"></span>`;
 
 // tabs
-document.querySelectorAll(".tab").forEach(t => t.addEventListener("click", () => {
-  document.querySelectorAll(".tab").forEach(x => x.classList.remove("active"));
-  t.classList.add("active");
-  const tab = t.dataset.tab;
+function activateTab(tab) {
+  document.querySelectorAll(".tab").forEach(x => x.classList.toggle("active", x.dataset.tab === tab));
   $("#searchView").style.display = tab === "search" ? "" : "none";
   $("#continueView").style.display = tab === "continue" ? "" : "none";
   $("#forYouView").style.display = tab === "for-you" ? "" : "none";
@@ -320,15 +424,76 @@ document.querySelectorAll(".tab").forEach(t => t.addEventListener("click", () =>
   if (tab === "for-you") loadForYou();
   if (tab === "downloads") loadDownloads();
   else { if (_downloadsPoll) { clearTimeout(_downloadsPoll); _downloadsPoll = null; } }
-}));
+  savePref("tab", tab);
+}
+document.querySelectorAll(".tab").forEach(t =>
+  t.addEventListener("click", () => activateTab(t.dataset.tab)));
+
+$("#mode").value = state.mode;
+$("#player").value = state.player;
 
 $("#mode").addEventListener("change", e => {
   state.mode = e.target.value;
+  savePref("mode", state.mode);
   _forYouCache = null;  // bust cache — mode affects available titles
   if ($("#q").value.trim()) runSearch();
 });
 
-$("#player").addEventListener("change", e => { state.player = e.target.value; });
+$("#player").addEventListener("change", e => {
+  state.player = e.target.value;
+  savePref("player", state.player);
+});
+
+// Keyboard: "/" focuses search, Escape collapses the open result / clears search.
+document.addEventListener("keydown", e => {
+  if (e.key === "/" && document.activeElement !== $("#q") &&
+      !/^(INPUT|SELECT|TEXTAREA)$/.test(document.activeElement.tagName || "")) {
+    e.preventDefault();
+    activateTab("search");
+    $("#q").focus();
+    $("#q").select();
+  } else if (e.key === "Escape") {
+    const open = document.querySelector(".item.expanded");
+    if (open) open.click();
+    else if (document.activeElement === $("#q")) { $("#q").value = ""; $("#results").innerHTML = ""; }
+  }
+});
+
+// A small toast (also used by the easter egg).
+function toast(text, ms = 4000) {
+  const t = document.createElement("div");
+  t.className = "toast";
+  t.textContent = text;
+  document.body.appendChild(t);
+  requestAnimationFrame(() => t.classList.add("show"));
+  setTimeout(() => { t.classList.remove("show"); setTimeout(() => t.remove(), 300); }, ms);
+}
+
+// Easter egg: the Konami code (↑↑↓↓←→←→ B A) rains petals + a thank-you.
+const KONAMI = ["arrowup","arrowup","arrowdown","arrowdown",
+                "arrowleft","arrowright","arrowleft","arrowright","b","a"];
+let _konamiIdx = 0;
+document.addEventListener("keydown", e => {
+  const k = e.key.toLowerCase();
+  _konamiIdx = (k === KONAMI[_konamiIdx]) ? _konamiIdx + 1
+            : (k === KONAMI[0] ? 1 : 0);
+  if (_konamiIdx === KONAMI.length) { _konamiIdx = 0; konamiRain(); }
+});
+function konamiRain() {
+  const glyphs = ["🌸", "⭐", "✨", "🍥", "🌙"];
+  for (let i = 0; i < 30; i++) {
+    const p = document.createElement("div");
+    p.className = "petal";
+    p.textContent = glyphs[Math.floor(Math.random() * glyphs.length)];
+    p.style.left = Math.random() * 100 + "vw";
+    p.style.fontSize = (14 + Math.random() * 22) + "px";
+    p.style.animationDuration = (3 + Math.random() * 3.5) + "s";
+    p.style.animationDelay = (Math.random() * 1.2) + "s";
+    document.body.appendChild(p);
+    setTimeout(() => p.remove(), 8000);
+  }
+  toast("やった！ Konami unlocked — thanks for using ani-gui ♡  (★ a star helps!)", 6000);
+}
 
 $("#dlDirSave").addEventListener("click", async () => {
   const dir = $("#dlDir").value.trim();
@@ -371,6 +536,32 @@ function showBanner(html, warn) {
   b.className = "banner show" + (warn ? " warn" : "");
 }
 
+// "Install ani-cli" button inside the missing-binary banner.
+function wireInstallAniCli() {
+  const btn = $("#installAniCli");
+  if (!btn) return;
+  btn.addEventListener("click", async () => {
+    btn.disabled = true;
+    btn.textContent = "Installing…";
+    try {
+      const d = await (await fetch("/api/install-ani-cli", { method: "POST" })).json();
+      if (d.ok) {
+        $("#bannerText").innerHTML = `<b>${escHtml(d.message)}</b>` +
+          (d.on_path === false ? "" : " Rechecking…");
+        loadVersion();  // refresh health/banner — should clear if it's now found
+      } else {
+        btn.disabled = false;
+        btn.textContent = "Retry install";
+        $("#bannerText").insertAdjacentHTML("beforeend",
+          `<div class="dl-note" style="margin-top:6px">${escHtml(d.error || "Install failed.")}</div>`);
+      }
+    } catch (_) {
+      btn.disabled = false;
+      btn.textContent = "Retry install";
+    }
+  });
+}
+
 async function loadVersion() {
   try {
     const v = await (await fetch("/api/version")).json();
@@ -388,8 +579,9 @@ async function loadVersion() {
 
     // Show the most important message.  Errors first, then updates.
     if (!c.installed) {
-      showBanner("<b>ani-cli isn't installed or isn't on PATH.</b> Install it from " +
-        `<a href="https://github.com/pystardust/ani-cli" target="_blank" rel="noreferrer">github.com/pystardust/ani-cli</a>, then reload.`, true);
+      showBanner("<b>ani-cli isn't installed.</b> It handles playback. " +
+        `<button id="installAniCli" class="banner-btn">Install ani-cli</button>`, true);
+      wireInstallAniCli();
     } else if (!v.has_player) {
       showBanner("<b>No video player found.</b> Install <code>mpv</code> or <code>iina</code> to watch.", true);
     } else if (v.ani_gui_update) {
@@ -475,17 +667,25 @@ async function selectShow(a, el) {
     const r = await fetch(`/api/episodes?id=${encodeURIComponent(a.id)}&mode=${state.mode}`);
     const d = await r.json();
     if (d.error) throw new Error(d.error);
-    renderDetail(a, d.episodes, el);
+    renderDetail(a, d.episodes, el, d.watched);
   } catch (err) {
     loader.innerHTML = `<div class="empty">Error: ${err.message}</div>`;
   }
 }
 
-function renderDetail(a, episodes, el) {
+const epNum = e => { const n = parseFloat(e); return isFinite(n) ? n : NaN; };
+
+function renderDetail(a, episodes, el, watched) {
   const panel = el.querySelector(".detail-panel");
+  const many = episodes.length > 40;
+  const first = episodes[0] || "", last = episodes[episodes.length - 1] || "";
   panel.innerHTML = `
     <div class="panel">
-      <div class="eps"></div>
+      <div class="ep-tools">
+        ${many ? '<input class="ep-jump" placeholder="Jump to ep…" inputmode="numeric" autocomplete="off">' : ''}
+        <span class="ep-count"></span>
+      </div>
+      <div class="eps${episodes.length > 60 ? ' scroll' : ''}"></div>
       <div class="actions">
         <select class="quality-select" title="Quality">
           <option value="best">Best</option>
@@ -496,7 +696,10 @@ function renderDetail(a, episodes, el) {
         </select>
         <button class="primary play-btn" disabled>Play</button>
         <button class="dl-btn" disabled>Download</button>
-        <button class="dl-all-btn" disabled title="Download every episode">Download All</button>
+        <span class="ep-range" title="Download every episode in this range">eps
+          <input class="dl-from" type="number" min="0" value="${first}">–<input class="dl-to" type="number" min="0" value="${last}">
+          <button class="dl-range-btn">Download range</button>
+        </span>
       </div>
       <div class="status" style="min-height:16px"></div>
     </div>`;
@@ -507,31 +710,79 @@ function renderDetail(a, episodes, el) {
   const status = panel.querySelector(".status");
   const playBtn = panel.querySelector(".play-btn");
   const dlBtn = panel.querySelector(".dl-btn");
-  const dlAllBtn = panel.querySelector(".dl-all-btn");
+  const rangeBtn = panel.querySelector(".dl-range-btn");
+  const qsel = panel.querySelector(".quality-select");
+  qsel.value = prefs.quality || "best";
+  qsel.addEventListener("change", () => savePref("quality", qsel.value));
 
   const epsBox = panel.querySelector(".eps");
+  const countEl = panel.querySelector(".ep-count");
   if (!episodes.length) {
     epsBox.innerHTML = `<span class="empty">No episodes available.</span>`;
+    countEl.textContent = "";
   }
+
+  const watchedNum = watched != null ? epNum(watched) : NaN;
+  let nextBtn = null;
   for (const ep of episodes) {
     const b = document.createElement("div");
     b.className = "ep";
     b.textContent = ep;
+    b.dataset.ep = ep;
+    if (!isNaN(watchedNum) && epNum(ep) <= watchedNum) b.classList.add("watched");
+    else if (!isNaN(watchedNum) && !nextBtn) nextBtn = b;  // first unwatched
     b.addEventListener("click", (e) => {
       e.stopPropagation();
-      epsBox.querySelectorAll(".ep").forEach(x => x.classList.remove("sel"));
-      b.classList.add("sel");
-      state.ep = ep;
-      playBtn.disabled = false;
-      dlBtn.disabled = false;
-      dlAllBtn.disabled = false;
+      selectEp(b);
     });
     epsBox.appendChild(b);
   }
 
+  function selectEp(b) {
+    epsBox.querySelectorAll(".ep").forEach(x => x.classList.remove("sel"));
+    b.classList.add("sel");
+    state.ep = b.dataset.ep;
+    playBtn.disabled = false;
+    dlBtn.disabled = false;
+  }
+
+  // Count + "continue from" hint, and pre-select the next unwatched episode.
+  const watchedNote = watched != null ? ` · watched up to ${watched}` : "";
+  countEl.textContent = `${episodes.length} episode${episodes.length === 1 ? "" : "s"}${watchedNote}`;
+  if (nextBtn) {
+    selectEp(nextBtn);
+    nextBtn.scrollIntoView({ block: "nearest" });
+  }
+
+  // Jump-to-episode filter for long series.
+  const jump = panel.querySelector(".ep-jump");
+  if (jump) {
+    jump.addEventListener("click", e => e.stopPropagation());
+    jump.addEventListener("input", () => {
+      const q = jump.value.trim();
+      let shown = 0;
+      epsBox.querySelectorAll(".ep").forEach(b => {
+        const match = !q || b.dataset.ep.startsWith(q);
+        b.classList.toggle("hide", !match);
+        if (match) shown++;
+      });
+      countEl.textContent = q
+        ? `${shown} of ${episodes.length} shown`
+        : `${episodes.length} episodes${watchedNote}`;
+    });
+  }
+
   playBtn.addEventListener("click", (e) => { e.stopPropagation(); doPlay({panel, status, playBtn, dlBtn}, false); });
   dlBtn.addEventListener("click", (e) => { e.stopPropagation(); doPlay({panel, status, playBtn, dlBtn}, true); });
-  dlAllBtn.addEventListener("click", (e) => { e.stopPropagation(); downloadAll({panel, status, playBtn, dlBtn, dlAllBtn}, episodes); });
+  rangeBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const from = epNum(panel.querySelector(".dl-from").value);
+    const to = epNum(panel.querySelector(".dl-to").value);
+    const lo = Math.min(from, to), hi = Math.max(from, to);
+    const sel = episodes.filter(ep => { const n = epNum(ep); return !isNaN(n) && n >= lo && n <= hi; });
+    if (!sel.length) { setStatus(status, "err", "No episodes in that range."); return; }
+    downloadEpisodes({panel, status, playBtn, dlBtn, rangeBtn}, sel);
+  });
 }
 
 async function doPlay(els, download) {
@@ -539,6 +790,7 @@ async function doPlay(els, download) {
   if (state.ep == null) {
     status.className = "status err"; status.textContent = "Pick an episode first."; return;
   }
+  if (download) notifyAsk();
   setStatus(status, "work", download
     ? `Asking ani-cli to download episode ${state.ep}…`
     : `Resolving episode ${state.ep} via ani-cli (finding a working source)…`);
@@ -556,6 +808,7 @@ async function doPlay(els, download) {
         player: state.player,
         download,
         title: state.selected.name,
+        id: state.selected.id,
         thumbnail: download ? (state.selected.thumbnail || "") : undefined,
       })});
     const d = await r.json();
@@ -566,6 +819,7 @@ async function doPlay(els, download) {
       // the tab is already open.
       if (download) {
         _downloadsDirty = true;
+        ensureDownloadWatcher();  // notify when it finishes, even off-tab
         // If the Downloads tab is already open, prepend the entry live.
         const dv = document.querySelector("#downloadsView");
         if (dv && dv.style.display !== "none") {
@@ -594,18 +848,19 @@ async function doPlay(els, download) {
   }
 }
 
-async function downloadAll(els, episodes) {
-  const { status, playBtn, dlBtn, dlAllBtn } = els;
-  dlAllBtn.disabled = true;
+async function downloadEpisodes(els, episodes) {
+  const { status, playBtn, dlBtn, rangeBtn } = els;
+  rangeBtn && (rangeBtn.disabled = true);
   playBtn.disabled = true;
   dlBtn && (dlBtn.disabled = true);
+  notifyAsk();  // ask once so we can ping when the batch finishes
 
   let done = 0;
   const total = episodes.length;
-  setStatus(status, "work", `Downloading ${total} episodes…`);
+  setStatus(status, "work", `Queuing ${total} episode${total === 1 ? "" : "s"}…`);
 
   for (const ep of episodes) {
-    setStatus(status, "work", `Downloading ep ${ep} (${done + 1} / ${total})…`);
+    setStatus(status, "work", `Queuing ep ${ep} (${done + 1} / ${total})…`);
     try {
       await fetch("/api/play", {
         method: "POST", headers: {"Content-Type": "application/json"},
@@ -618,6 +873,7 @@ async function downloadAll(els, episodes) {
           player: state.player,
           download: true,
           title: state.selected.name,
+          id: state.selected.id,
           thumbnail: state.selected.thumbnail || "",
         })});
       done++;
@@ -629,10 +885,11 @@ async function downloadAll(els, episodes) {
   }
 
   _downloadsDirty = true;
-  setStatus(status, "ok", `Queued ${done} of ${total} episodes for download.`);
+  ensureDownloadWatcher();  // notify when the batch finishes, even off-tab
+  setStatus(status, "ok", `Queued ${done} of ${total} episode${total === 1 ? "" : "s"} for download.`);
   playBtn.disabled = !state.ep;
   dlBtn && (dlBtn.disabled = !state.ep);
-  dlAllBtn.disabled = false;
+  rangeBtn && (rangeBtn.disabled = false);
 }
 
 function setStatus(el, kind, text) {
@@ -884,7 +1141,7 @@ function updateDownloadItem(el, di) {
 
   // Explanatory note for failed / stalled states.
   const noteText = di.status === "failed"
-    ? "No file found — this download may have failed. Try again from Search."
+    ? "Download failed — hit Retry to try this episode again."
     : di.status === "stalled"
     ? "Stalled — the source stopped responding. Cancel to keep the partial file, or retry from Search."
     : "";
@@ -918,6 +1175,33 @@ function updateDownloadItem(el, di) {
       info.appendChild(cancel);
     }
   } else if (cancel) { cancel.remove(); }
+
+  // Retry button for failed downloads (re-issues the same episode).
+  let retry = el.querySelector(".dl-retry");
+  if (di.status === "failed" && di.id) {
+    if (!retry) {
+      retry = document.createElement("button");
+      retry.className = "dl-retry";
+      retry.textContent = "Retry";
+      retry.dataset.id = di.id;
+      retry.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        retry.disabled = true;
+        retry.textContent = "Retrying…";
+        notifyAsk();
+        try {
+          await fetch("/api/retry-download", {
+            method: "POST", headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({id: retry.dataset.id}),
+          });
+        } catch (_) {}
+        _downloadsDirty = true;
+        ensureDownloadWatcher();
+        refreshDownloadStatus();
+      });
+      info.appendChild(retry);
+    }
+  } else if (retry) { retry.remove(); }
 
   // Play-file buttons for any matched files (kept in sync as files appear).
   const files = di.files || [];
@@ -983,6 +1267,7 @@ async function refreshDownloadStatus() {
     const r = await fetch("/api/downloads");
     const d = await r.json();
     if (d.error) { scheduleDownloadsPoll(false); return; }
+    checkDownloadNotifications(d.items);
     active = d.items.some(i => i.status === "downloading" || i.status === "stalled");
     const struct = dlStructure(d.items);
     // A new download (or any change to which episodes exist) needs a full
@@ -1128,6 +1413,38 @@ function updateDownloadGroupHeader(head, items) {
     bar.remove();
   }
   head.parentElement.style.opacity = (!c.active && c.done === c.total) ? "0.7" : "1";
+
+  // One-click "Retry failed (N)" for the common download-all-some-fail case.
+  const failedItems = items.filter(d => d.status === "failed" && d.id);
+  let gretry = head.querySelector(".dl-group-retry");
+  if (failedItems.length && !c.active) {
+    if (!gretry) {
+      gretry = document.createElement("button");
+      gretry.className = "dl-group-retry";
+      gretry.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        gretry.disabled = true;
+        gretry.textContent = "Retrying…";
+        notifyAsk();
+        for (const d of items.filter(x => x.status === "failed" && x.id)) {
+          try {
+            await fetch("/api/retry-download", {
+              method: "POST", headers: {"Content-Type": "application/json"},
+              body: JSON.stringify({id: d.id}),
+            });
+          } catch (_) {}
+          await new Promise(r => setTimeout(r, 800));
+        }
+        _downloadsDirty = true;
+        ensureDownloadWatcher();
+        refreshDownloadStatus();
+      });
+      info.appendChild(gretry);
+    }
+    gretry.textContent = `Retry failed (${failedItems.length})`;
+  } else if (gretry) {
+    gretry.remove();
+  }
 }
 
 function makeDownloadGroup(group) {
@@ -1178,6 +1495,9 @@ function renderDownloads(items) {
   box.insertAdjacentHTML("beforeend",
     `<div class="hint" style="margin-top:12px">Files saved to <code>${escHtml(items[0].dir)}</code> (or <code>$ANI_CLI_DOWNLOAD_DIR</code> if set).</div>`);
 }
+
+// Restore the last tab the user was on (runs last, after all state is set up).
+if (prefs.tab && prefs.tab !== "search") activateTab(prefs.tab);
 </script>
 </body>
 </html>

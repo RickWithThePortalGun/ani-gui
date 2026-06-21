@@ -1,4 +1,4 @@
-# ani-gui
+ # ani-gui
 
 <p align="center">
   <a href="https://github.com/rickwiththeportalgun/ani-gui/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-blue?logo=gnu" alt="license: GPL-3.0"></a>
@@ -28,16 +28,51 @@ place and keeps working as ani-cli updates.
 
 ## Requirements
 
-- `ani-cli` installed and working (it handles playback)
+- `ani-cli` (it handles playback) — the [one-line installer](#install--run),
+  the Homebrew formula, and `ani-gui --install-ani-cli` will set it up for you
+  if it's missing; or install it yourself
 - `python3` (standard library only — no pip installs)
 - A player ani-cli knows about (mpv / IINA / VLC) for watching
 
+On Linux, install the dependencies from your package manager first:
+
+```sh
+# Debian/Ubuntu
+sudo apt install mpv python3 pipx
+# Fedora
+sudo dnf install mpv python3 pipx
+# Arch
+sudo pacman -S mpv python python-pipx
+```
+
+`ani-cli` isn't packaged on most distros — install it from the
+[upstream repo](https://github.com/pystardust/ani-cli) (Arch users: `yay -S ani-cli`):
+
+```sh
+sudo curl -sL https://raw.githubusercontent.com/pystardust/ani-cli/master/ani-cli -o /usr/local/bin/ani-cli
+sudo chmod +x /usr/local/bin/ani-cli
+```
+
 ## Install & run
+
+**One-line installer** — installs ani-cli, a player, and ani-gui (skips
+whatever's already there):
+
+```sh
+curl -sL https://raw.githubusercontent.com/rickwiththeportalgun/ani-gui/main/install.sh | sh
+```
 
 **pipx** — recommended. Isolated environment, handles PATH automatically:
 
 ```sh
-brew install pipx && pipx ensurepath     # first time only
+# Install pipx first (one time):
+#   Debian/Ubuntu:  sudo apt install pipx
+#   Fedora:         sudo dnf install pipx
+#   Arch:           sudo pacman -S python-pipx
+#   macOS:          brew install pipx
+#   any OS:         python3 -m pip install --user pipx
+pipx ensurepath          # adds ~/.local/bin to PATH — restart your shell after
+
 pipx install ani-gui
 ani-gui
 ```
@@ -49,21 +84,24 @@ brew install rickwiththeportalgun/tap/ani-gui
 ani-gui
 ```
 
-**pip** — works but may need a PATH tweak. On macOS, `pip3` installs scripts to
-`~/Library/Python/3.x/bin`, which isn't on `PATH` by default. Add it to your
-shell config if you go this route:
+**pip** — works but may need a PATH tweak. Scripts land in a user bin dir that
+isn't always on `PATH`: `~/.local/bin` on Linux, `~/Library/Python/3.x/bin` on
+macOS. Add it to your shell config if `ani-gui` isn't found:
 
 ```sh
-pip3 install ani-gui
-# If "command not found", add the scripts dir to PATH:
+pip3 install --user ani-gui
+# Linux — if "command not found":
+export PATH="$HOME/.local/bin:$PATH"
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc   # or ~/.zshrc
+# macOS — if "command not found":
 export PATH="$HOME/Library/Python/$(python3 -c 'import sys;print(sys.version_info.minor)')/bin:$PATH"
-echo 'export PATH="$HOME/Library/Python/$(python3 -c "import sys;print(sys.version_info.minor)")/bin:$PATH"' >> ~/.zshrc
 ani-gui
 ```
 
 **From source** (no install):
 
 ```sh
+git clone https://github.com/rickwiththeportalgun/ani-gui && cd ani-gui
 ./ani-gui
 ```
 
@@ -78,6 +116,39 @@ your browser. Options: `--port`, `--host`, `--no-browser` (or `ANI_GUI_PORT`).
 
 > ani-gui is a **localhost** tool — it opens a player on the machine running it,
 > so it isn't a shared website. See [DISTRIBUTION.md](DISTRIBUTION.md).
+
+## Uninstall / teardown
+
+Remove ani-gui the same way you installed it:
+
+```sh
+pipx uninstall ani-gui          # installed with pipx
+pip3 uninstall ani-gui          # installed with pip
+brew uninstall ani-gui          # installed via the Homebrew tap
+# from source: just delete the cloned folder
+```
+
+ani-gui keeps a little state next to ani-cli's, under
+`~/.local/state/ani-cli/` (or `$XDG_STATE_HOME/ani-cli`). Remove the files
+**ani-gui** created — this leaves ani-cli's own watch history untouched:
+
+```sh
+rm -f ~/.local/state/ani-cli/ani-gui-settings.json   # your saved download dir
+rm -f ~/.local/state/ani-cli/ani-downloads.json      # ani-gui's download log
+```
+
+Downloaded videos stay wherever you saved them (your chosen download directory,
+or the folder you launched from) — delete those yourself if you want.
+
+To also remove ani-cli and the player (full teardown):
+
+```sh
+rm -rf ~/.local/state/ani-cli         # ani-cli watch history + ani-gui state
+sudo rm -f /usr/local/bin/ani-cli     # if installed via the curl snippet above
+# Debian/Ubuntu:  sudo apt remove mpv
+# Fedora:         sudo dnf remove mpv
+# Arch:           sudo pacman -R mpv
+```
 
 ## Use
 

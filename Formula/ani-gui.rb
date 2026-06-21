@@ -10,12 +10,15 @@ class AniGui < Formula
 
   desc "Small local web UI for ani-cli"
   homepage "https://github.com/rickwiththeportalgun/ani-gui"
-  url "https://github.com/rickwiththeportalgun/ani-gui/archive/refs/tags/v0.4.0.tar.gz"
-  sha256 "32f5346f6df28f20c629a03a8069f97f7bc81d7b763c60022d7539b07df27535"
+  url "https://github.com/rickwiththeportalgun/ani-gui/archive/refs/tags/v0.5.0.tar.gz"
+  sha256 ""  # placeholder — update after `brew fetch` on the tagged release
   license "GPL-3.0-or-later"
 
-  depends_on "python@3.12"
+  # ani-cli does the actual playback; mpv is its default player. Brew pulls
+  # both in automatically so a fresh `brew install` gives a working setup.
+  depends_on "ani-cli"
   depends_on "mpv"
+  depends_on "python@3.12"
 
   def install
     virtualenv_install_with_resources
@@ -23,14 +26,13 @@ class AniGui < Formula
 
   def caveats
     <<~EOS
-      ani-gui requires ani-cli for playback.  Install it from the upstream
-      repo if you haven't already:
+      ani-gui is a localhost tool — run it and it opens http://127.0.0.1:17390
+      in your browser:
 
-        curl -sL https://raw.githubusercontent.com/pystardust/ani-cli/master/ani-cli -o /usr/local/bin/ani-cli
-        chmod +x /usr/local/bin/ani-cli
-
-      Then run:
         ani-gui
+
+      ani-cli and mpv were installed as dependencies. If you'd rather use a
+      different player (IINA / VLC), install it and ani-cli will pick it up.
     EOS
   end
 
