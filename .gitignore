@@ -8,7 +8,6 @@ venv/
 # Editors / OS
 .DS_Store
 .idea/
-.vscode/
 *.swp
 
 # Logs / local
@@ -19,3 +18,5 @@ dist/
 build/
 *.app/
 .ruff_cache/
+config.bat
+node_modules
