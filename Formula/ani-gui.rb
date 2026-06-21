@@ -11,7 +11,7 @@ class AniGui < Formula
   desc "Small local web UI for ani-cli"
   homepage "https://github.com/rickwiththeportalgun/ani-gui"
   url "https://github.com/rickwiththeportalgun/ani-gui/archive/refs/tags/v0.5.0.tar.gz"
-  sha256 ""  # placeholder — update after `brew fetch` on the tagged release
+  sha256 "728480e6cb2e45769141ee907b3356fc2783a87301f64f598b4ebda9819198b7"
   license "GPL-3.0-or-later"
 
   # ani-cli does the actual playback; mpv is its default player. Brew pulls
