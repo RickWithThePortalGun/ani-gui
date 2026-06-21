@@ -25,6 +25,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Source moved into the `ani_gui/` package; run from source with `./ani-gui`
   or `python3 -m ani_gui`.
 
+## [0.5.1] — 2026-06-21
+
+### Fixed
+- Playback errors now surface ani-cli's **actual** reason (ANSI-stripped)
+  instead of a generic "couldn't resolve a stream" — a missing dependency,
+  dead provider, etc. Missing-dependency failures get an actionable message
+  naming the program to install.
+- "Default player" now falls back to VLC when only VLC is installed (no
+  mpv/IINA) — previously ani-cli defaulted to mpv and died on Linux boxes that
+  only had VLC.
+
 ## [0.5.0] — 2026-06-21
 
 ### Added
@@ -76,7 +87,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Sub/Dub toggle, quality selection, and download support.
 - Endpoints: `GET /api/search`, `GET /api/episodes`, `POST /api/play`.
 
-[Unreleased]: https://github.com/rickwiththeportalgun/ani-gui/compare/v0.5.0...main
+[Unreleased]: https://github.com/rickwiththeportalgun/ani-gui/compare/v0.5.1...main
+[0.5.1]: https://github.com/rickwiththeportalgun/ani-gui/releases/tag/v0.5.1
 [0.5.0]: https://github.com/rickwiththeportalgun/ani-gui/releases/tag/v0.5.0
 [0.4.0]: https://github.com/rickwiththeportalgun/ani-gui/releases/tag/v0.4.0
 [0.2.0]: https://github.com/rickwiththeportalgun/ani-gui

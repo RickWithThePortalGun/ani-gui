@@ -31,7 +31,7 @@ from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-VERSION = "0.5.0"
+VERSION = "0.5.1"
 ANI_CLI_RAW = "https://raw.githubusercontent.com/pystardust/ani-cli/master/ani-cli"
 
 # --- AllAnime API (mirrors the constants inside the ani-cli script) ----------
@@ -885,6 +885,36 @@ def _player_label(player):
     return "your player"
 
 
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]|\r")
+
+
+def _strip_ansi(s):
+    return _ANSI_RE.sub("", s)
+
+
+def _ani_cli_error_detail(out, limit=240):
+    """Extract the most useful line from ani-cli's output for the UI.
+
+    ani-cli prints its real failure reason (missing dependency, dead provider,
+    bad range, …) to stderr wrapped in ANSI colour codes. We strip those and
+    surface the most relevant line so the user sees the actual cause instead of
+    a generic 'couldn't resolve a stream'."""
+    lines = [ln.strip() for ln in _strip_ansi(out).splitlines() if ln.strip()]
+    keywords = ("not found", "please install", "no valid", "not released",
+                "connection error", "invalid", "error", "failed", "no such")
+    pick = ""
+    for ln in reversed(lines):
+        low = ln.lower()
+        if any(k in low for k in keywords) and "links fetched" not in low:
+            pick = ln
+            break
+    if not pick:
+        # Fall back to the last non-progress line.
+        pick = next((ln for ln in reversed(lines)
+                     if "links fetched" not in ln.lower()), "")
+    return pick[:limit]
+
+
 def play(query, nth, ep, quality, mode, download=False, player="default",
          thumbnail="", title="", show_id=""):
     """Run ani-cli for one episode.
@@ -901,7 +931,13 @@ def play(query, nth, ep, quality, mode, download=False, player="default",
     cmd = [binp, "-S", str(nth), "-e", str(ep), "-q", quality or "best"]
     if mode == "dub":
         cmd.append("--dub")
-    if player == "vlc":
+    # ani-cli defaults to mpv. If the user picked VLC, or "default" but only VLC
+    # is installed (common on Linux), tell ani-cli to use VLC (-v) so playback
+    # doesn't die with "Program mpv not found".
+    use_vlc = player == "vlc" or (
+        player == "default" and not shutil.which("mpv")
+        and not shutil.which("iina") and shutil.which("vlc"))
+    if use_vlc:
         cmd.append("-v")
     if download:
         cmd.append("-d")
@@ -1000,9 +1036,22 @@ def play(query, nth, ep, quality, mode, download=False, player="default",
     fell_back = "specified quality not found" in low
     fetched = "links fetched" in low
     if not fetched and proc.returncode != 0:
+        detail = _ani_cli_error_detail(out)
+        # Most common real cause on a fresh box: ani-cli is missing one of its
+        # own dependencies (a player, fzf, openssl, …). Make that actionable.
+        m = re.search(r'program "(.+?)" not found', detail, re.I)
+        if m:
+            return {"ok": False, "stage": "missing_dep",
+                    "error": f'ani-cli needs "{m.group(1)}" but it isn\'t '
+                             "installed. Install it with your package manager, "
+                             "then try again.",
+                    "detail": detail}
         return {"ok": False, "stage": "failed",
-                "error": "Couldn't resolve a stream. "
-                         "Try another quality or result."}
+                "error": ("ani-cli couldn't resolve a stream — " + detail)
+                         if detail else
+                         "ani-cli couldn't resolve a stream. "
+                         "Try another quality or result.",
+                "detail": detail}
 
     msg = f"Playing episode {ep} in {plabel}."
     if fell_back:
