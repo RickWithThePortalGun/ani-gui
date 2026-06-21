@@ -25,6 +25,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Source moved into the `ani_gui/` package; run from source with `./ani-gui`
   or `python3 -m ani_gui`.
 
+## [0.5.3] — 2026-06-21
+
+### Fixed
+- Failed downloads now show ani-cli's **real reason** (e.g. `Program "aria2c"
+  not found`) instead of a generic "Download failed" — the reader thread keeps a
+  tail of the downloader's output and surfaces the error on a non-zero exit.
+- Diagnostics now flags missing **download** dependencies (aria2c / ffmpeg),
+  which ani-cli requires for any download.
+
 ## [0.5.2] — 2026-06-21
 
 ### Added
@@ -102,7 +111,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Sub/Dub toggle, quality selection, and download support.
 - Endpoints: `GET /api/search`, `GET /api/episodes`, `POST /api/play`.
 
-[Unreleased]: https://github.com/rickwiththeportalgun/ani-gui/compare/v0.5.2...main
+[Unreleased]: https://github.com/rickwiththeportalgun/ani-gui/compare/v0.5.3...main
+[0.5.3]: https://github.com/rickwiththeportalgun/ani-gui/releases/tag/v0.5.3
 [0.5.2]: https://github.com/rickwiththeportalgun/ani-gui/releases/tag/v0.5.2
 [0.5.1]: https://github.com/rickwiththeportalgun/ani-gui/releases/tag/v0.5.1
 [0.5.0]: https://github.com/rickwiththeportalgun/ani-gui/releases/tag/v0.5.0

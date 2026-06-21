@@ -1237,9 +1237,10 @@ function updateDownloadItem(el, di) {
 
   applyProgressBar(el, di);
 
-  // Explanatory note for failed / stalled states.
+  // Explanatory note for failed / stalled states — show ani-cli's real reason
+  // when we have one (e.g. missing aria2c/ffmpeg), else a generic hint.
   const noteText = di.status === "failed"
-    ? "Download failed — hit Retry to try this episode again."
+    ? (di.error ? `Failed: ${di.error}` : "Download failed — hit Retry to try this episode again.")
     : di.status === "stalled"
     ? "Stalled — the source stopped responding. Cancel to keep the partial file, or retry from Search."
     : "";

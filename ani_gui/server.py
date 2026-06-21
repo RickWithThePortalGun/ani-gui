@@ -31,7 +31,7 @@ from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-VERSION = "0.5.2"
+VERSION = "0.5.3"
 ANI_CLI_RAW = "https://raw.githubusercontent.com/pystardust/ani-cli/master/ani-cli"
 
 # --- AllAnime API (mirrors the constants inside the ani-cli script) ----------
@@ -230,10 +230,15 @@ def _parse_progress_line(line):
 
 
 def _watch_download(dl_id, master_fd, proc):
-    """Read the download's terminal output, parse progress, mark completion."""
+    """Read the download's terminal output, parse progress, mark completion.
+
+    Keeps a rolling tail of the output so that if the download fails (e.g.
+    ani-cli is missing aria2c/ffmpeg, or the source 404s) we can surface the
+    real reason instead of a bare 'failed'."""
     _set_progress(dl_id, {"downloading": True, "percent": None,
                           "_advance_ts": time.time()})
     buf = b""
+    tail = []  # last handful of complete lines, for error reporting
     try:
         while True:
             try:
@@ -252,12 +257,21 @@ def _watch_download(dl_id, master_fd, proc):
                 p = _parse_progress_line(ln)
                 if p:
                     _set_progress(dl_id, p)
+                elif ln.strip():
+                    tail.append(ln)
+                    if len(tail) > 40:
+                        tail.pop(0)
     finally:
         try:
             os.close(master_fd)
         except OSError:
             pass
-        _finish_progress(dl_id, proc.wait())
+        rc = proc.wait()
+        if rc != 0 and not _active_downloads.get(dl_id, {}).get("cancelled"):
+            detail = _ani_cli_error_detail("\n".join(tail))
+            if detail:
+                _set_progress(dl_id, {"error_detail": detail})
+        _finish_progress(dl_id, rc)
 
 
 def _read_settings():
@@ -586,6 +600,8 @@ def _downloads_with_status():
                 d["partial"] = bool(matched)
             else:
                 d["status"] = "done" if live["returncode"] == 0 else "failed"
+            if d["status"] == "failed" and live.get("error_detail"):
+                d["error"] = live["error_detail"]
             continue
 
         # No live state — fall back to pid liveness + file presence.
@@ -1250,6 +1266,13 @@ def diagnostics():
     if as_root:
         problems.append("ani-gui is running as root — the player may not reach "
                         "your display. Run it as your normal user.")
+    # Downloads: ani-cli's dep check requires BOTH aria2c and ffmpeg (fatal),
+    # and uses yt-dlp for m3u8 sources. Missing any breaks downloading.
+    dl_missing = [t for t in ("aria2c", "ffmpeg") if not shutil.which(t)]
+    if dl_missing:
+        problems.append("Downloads need " + " and ".join(dl_missing) +
+                        " — ani-cli won't download without them. "
+                        "Install them (and yt-dlp for HLS sources).")
 
     return {
         "platform": platform.platform(),
