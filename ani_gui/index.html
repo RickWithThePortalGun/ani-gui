@@ -199,6 +199,11 @@
   .diag-row .v { color: var(--text); word-break: break-all; }
   .diag-row .v.no { color: #ff7a7a; }
   .diag-row .v.yes { color: var(--accent); }
+  .diag-toggle {
+    display: flex; align-items: flex-start; gap: 8px; margin-top: 14px;
+    font-size: 12.5px; color: var(--text); cursor: pointer; line-height: 1.4;
+  }
+  .diag-toggle input { margin-top: 2px; accent-color: var(--accent); }
 
   /* Easter egg — Konami code rains a few petals + shows a toast. */
   .petal {
@@ -612,16 +617,54 @@ async function openDiagnostics() {
   const disp = d.display || {};
   const hasDisp = !!(disp.DISPLAY || disp.WAYLAND_DISPLAY);
   if (/linux/i.test(d.platform || "")) {
-    html += row("display", hasDisp
-      ? (disp.DISPLAY || disp.WAYLAND_DISPLAY) + (disp.XDG_SESSION_TYPE ? ` (${disp.XDG_SESSION_TYPE})` : "")
-      : "none — player can't open a window", hasDisp ? "yes" : "no");
+    html += row("session", disp.XDG_SESSION_TYPE || "unknown");
+    html += row("WAYLAND_DISPLAY", disp.WAYLAND_DISPLAY || "not set", disp.WAYLAND_DISPLAY ? "yes" : (d.wayland ? "no" : ""));
+    html += row("DISPLAY (XWayland)", disp.DISPLAY || "not set", disp.DISPLAY ? "yes" : "no");
+    html += row("XDG_RUNTIME_DIR", disp.XDG_RUNTIME_DIR || "not set", disp.XDG_RUNTIME_DIR ? "yes" : "no");
+    if (!hasDisp) html += row("display", "none — player can't open a window", "no");
     html += row("running as root", d.running_as_root ? "yes — run as your user" : "no", d.running_as_root ? "no" : "yes");
   }
   const tools = d.tools || {};
   html += row("tools", Object.keys(tools).map(k => (tools[k] ? k : k + "✗")).join(", "));
 
-  html += `<div class="hint" style="margin-top:12px">Still stuck? Run <code>ani-cli -S 1 -e 1 "frieren"</code> in a terminal — if that doesn't play either, it's an ani-cli/stream issue, not ani-gui.</div>`;
+  // Wayland workaround toggle (forces the player onto X11/XWayland).
+  if (d.wayland) {
+    html += `<label class="diag-toggle">
+      <input type="checkbox" id="forceX11"${d.force_x11 ? " checked" : ""}>
+      Force X11 for the player (Wayland workaround — try this if mpv resolves but no window opens)
+    </label>`;
+  }
+
+  html += `<div style="margin-top:14px">
+    <button id="testStreamBtn" class="banner-btn" style="margin:0">Test stream reachability</button>
+    <div id="testStreamResult" class="hint" style="margin-top:8px">Does a tiny real download to check if the stream actually reaches your machine (~up to 80s).</div>
+  </div>`;
   $("#diagBody").innerHTML = html;
+
+  const x11 = $("#forceX11");
+  if (x11) x11.addEventListener("change", async () => {
+    try {
+      await fetch("/api/settings", {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({force_x11: x11.checked}),
+      });
+    } catch (_) {}
+  });
+
+  $("#testStreamBtn").addEventListener("click", async () => {
+    const btn = $("#testStreamBtn"), res = $("#testStreamResult");
+    btn.disabled = true; btn.textContent = "Testing… (up to 80s)";
+    res.className = "hint"; res.textContent = "Resolving a stream and trying to download a little data…";
+    try {
+      const t = await (await fetch("/api/test-stream")).json();
+      res.className = "diag-" + (t.ok ? "ok" : "problem");
+      res.textContent = (t.ok ? "✓ " : "⚠ ") + t.message;
+    } catch (_) {
+      res.className = "diag-problem";
+      res.textContent = "⚠ Test failed to run.";
+    }
+    btn.disabled = false; btn.textContent = "Test stream again";
+  });
 }
 
 // "Install ani-cli" button inside the missing-binary banner.

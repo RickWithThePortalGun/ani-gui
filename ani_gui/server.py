@@ -31,7 +31,7 @@ from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-VERSION = "0.5.3"
+VERSION = "0.5.4"
 ANI_CLI_RAW = "https://raw.githubusercontent.com/pystardust/ani-cli/master/ani-cli"
 
 # --- AllAnime API (mirrors the constants inside the ani-cli script) ----------
@@ -973,6 +973,15 @@ def play(query, nth, ep, quality, mode, download=False, player="default",
     if ddir:
         env["ANI_CLI_DOWNLOAD_DIR"] = ddir
 
+    # Wayland workaround: if the player's native Wayland output is broken (a
+    # common GPU/driver issue — mpv gets the stream but never opens a window),
+    # force the toolkits onto X11/XWayland by dropping WAYLAND_DISPLAY.
+    if not download and sys.platform.startswith("linux") \
+            and _read_settings().get("force_x11"):
+        env.pop("WAYLAND_DISPLAY", None)
+        env.setdefault("GDK_BACKEND", "x11")
+        env.setdefault("QT_QPA_PLATFORM", "xcb")
+
     plabel = "the downloader" if download else ("VLC" if use_vlc else _player_label(player))
 
     # The download is recorded under the show's *canonical* name (what ani-cli
@@ -1249,6 +1258,7 @@ def diagnostics():
         "DISPLAY": os.environ.get("DISPLAY", ""),
         "WAYLAND_DISPLAY": os.environ.get("WAYLAND_DISPLAY", ""),
         "XDG_SESSION_TYPE": os.environ.get("XDG_SESSION_TYPE", ""),
+        "XDG_RUNTIME_DIR": os.environ.get("XDG_RUNTIME_DIR", ""),
     }
     as_root = (os.geteuid() == 0) if hasattr(os, "geteuid") else False
 
@@ -1266,6 +1276,10 @@ def diagnostics():
     if as_root:
         problems.append("ani-gui is running as root — the player may not reach "
                         "your display. Run it as your normal user.")
+    if sys.platform.startswith("linux") and not os.environ.get("XDG_RUNTIME_DIR"):
+        problems.append("XDG_RUNTIME_DIR isn't set — the player can't reach the "
+                        "Wayland compositor or audio. Start ani-gui from a "
+                        "terminal inside your desktop session.")
     # Downloads: ani-cli's dep check requires BOTH aria2c and ffmpeg (fatal),
     # and uses yt-dlp for m3u8 sources. Missing any breaks downloading.
     dl_missing = [t for t in ("aria2c", "ffmpeg") if not shutil.which(t)]
@@ -1284,9 +1298,104 @@ def diagnostics():
                             "openssl")},
         "display": disp,
         "running_as_root": as_root,
+        "wayland": (disp["XDG_SESSION_TYPE"] == "wayland"
+                    or bool(disp["WAYLAND_DISPLAY"])),
+        "force_x11": bool(_read_settings().get("force_x11")),
         "problems": problems,
         "ok": not problems,
     }
+
+
+def test_stream(query="frieren"):
+    """Do a tiny real download to check the stream pipeline end-to-end.
+
+    This isolates 'the stream is unreachable' from 'the player won't open': if
+    bytes actually download, ani-cli's resolution and the CDN are fine, so a
+    failure to *play* is an mpv window/config issue rather than the stream."""
+    binp = ani_cli_path()
+    if not binp:
+        return {"ok": False, "result": "no_ani_cli",
+                "message": "ani-cli isn't installed or on PATH."}
+    if not (hasattr(os, "openpty") and os.name == "posix"):
+        return {"ok": False, "result": "unsupported",
+                "message": "Stream test is only available on macOS/Linux."}
+
+    import glob
+    import select
+    import tempfile
+    tmp = tempfile.mkdtemp(prefix="ani-gui-test-")
+    cmd = [binp, "-S", "1", "-e", "1", "-q", "worst", "-d", query]
+    env = dict(os.environ)
+    env["PATH"] = os.pathsep.join(
+        ["/opt/homebrew/bin", "/usr/local/bin",
+         os.path.expanduser("~/.local/bin")]) + os.pathsep + env.get("PATH", "")
+    env["ANI_CLI_DOWNLOAD_DIR"] = tmp
+
+    out, verdict = "", None
+    master, slave = os.openpty()
+    proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=slave,
+                            stderr=slave, env=env, start_new_session=True)
+    os.close(slave)
+    try:
+        # ani-cli's resolution phase can take ~45s before any bytes flow, so
+        # give the test a generous window before calling the CDN unreachable.
+        deadline = time.time() + 80
+        while time.time() < deadline:
+            r, _, _ = select.select([master], [], [], 1.0)
+            if r:
+                try:
+                    chunk = os.read(master, 4096)
+                except OSError:
+                    break
+                if not chunk:
+                    break
+                out += chunk.decode("utf-8", "replace")
+            low = out.lower()
+            files = [f for f in glob.glob(os.path.join(tmp, "*"))
+                     if os.path.isfile(f)]
+            if files and max((os.path.getsize(f) for f in files), default=0) > 50000:
+                verdict = "reachable"
+                break
+            if "no valid sources" in low or "episode not released" in low:
+                verdict = "no_source"
+                break
+            if proc.poll() is not None and not r:
+                break
+    finally:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        except (OSError, ProcessLookupError):
+            pass
+        try:
+            os.close(master)
+        except OSError:
+            pass
+        import shutil as _sh
+        _sh.rmtree(tmp, ignore_errors=True)
+
+    low = out.lower()
+    detail = _ani_cli_error_detail(out)
+    if verdict == "reachable":
+        return {"ok": True, "result": "reachable",
+                "message": "Stream resolved and downloaded data — the stream is "
+                           "reachable. So if playback doesn't open a window, it's "
+                           "an mpv display/config issue, not the stream. Test "
+                           "`mpv <a local video file>` to confirm mpv itself works."}
+    if verdict == "no_source":
+        return {"ok": False, "result": "no_source",
+                "message": "ani-cli found no working source for this title — the "
+                           "AllAnime providers may be down. Try another title or "
+                           "again later.", "detail": detail}
+    if "links fetched" in low:
+        return {"ok": False, "result": "unreachable",
+                "message": "ani-cli resolved a link but no data downloaded — the "
+                           "stream CDN is unreachable or blocked on your network "
+                           "(VPN/DNS/ISP). This also breaks playback and downloads.",
+                "detail": detail}
+    return {"ok": False, "result": "failed",
+            "message": "Couldn't resolve a stream in the test." +
+                       (f" ani-cli said: {detail}" if detail else ""),
+            "detail": detail}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1401,6 +1510,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, version_info())
             if u.path == "/api/diagnostics":
                 return self._send(200, diagnostics())
+            if u.path == "/api/test-stream":
+                qn = (q.get("q", ["frieren"])[0]).strip() or "frieren"
+                return self._send(200, test_stream(qn))
             if u.path == "/api/cover":
                 path = (q.get("path", [""])[0])
                 title = (q.get("title", [""])[0])
@@ -1483,6 +1595,8 @@ class Handler(BaseHTTPRequestHandler):
                 s = _read_settings()
                 if "download_dir" in body:
                     s["download_dir"] = body["download_dir"]
+                if "force_x11" in body:
+                    s["force_x11"] = bool(body["force_x11"])
                 _write_settings(s)
                 return self._send(200, s)
             if u.path == "/api/play-file":

@@ -25,6 +25,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Source moved into the `ani_gui/` package; run from source with `./ani-gui`
   or `python3 -m ani_gui`.
 
+## [0.5.4] — 2026-06-21
+
+### Added
+- **Force X11 (Wayland workaround)** toggle in Diagnostics — drops
+  `WAYLAND_DISPLAY` (and sets `GDK_BACKEND=x11` / `QT_QPA_PLATFORM=xcb`) for the
+  player, so mpv/VLC use XWayland when native Wayland output is broken (the
+  player resolves the stream but never opens a window). Only shown on Wayland.
+- **"Test stream reachability"** button in Diagnostics (`GET /api/test-stream`)
+  — does a tiny real download to tell apart "the stream CDN is unreachable on
+  your network" from "the player won't open a window," which look identical
+  otherwise (both: nothing plays).
+
 ## [0.5.3] — 2026-06-21
 
 ### Fixed
@@ -111,7 +123,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Sub/Dub toggle, quality selection, and download support.
 - Endpoints: `GET /api/search`, `GET /api/episodes`, `POST /api/play`.
 
-[Unreleased]: https://github.com/rickwiththeportalgun/ani-gui/compare/v0.5.3...main
+[Unreleased]: https://github.com/rickwiththeportalgun/ani-gui/compare/v0.5.4...main
+[0.5.4]: https://github.com/rickwiththeportalgun/ani-gui/releases/tag/v0.5.4
 [0.5.3]: https://github.com/rickwiththeportalgun/ani-gui/releases/tag/v0.5.3
 [0.5.2]: https://github.com/rickwiththeportalgun/ani-gui/releases/tag/v0.5.2
 [0.5.1]: https://github.com/rickwiththeportalgun/ani-gui/releases/tag/v0.5.1
